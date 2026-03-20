@@ -3467,7 +3467,13 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 					user_param->memory_create = cuda_memory_create;
 					use_cuda_flag = 0;
 				}
-				//TEO_TODO: Check bounce buffer cuda flag and set memory_Create to my function
+				if (use_bounce_buffer_flag) { // TEO_TODO: If this works, I can probably fold this into cuda_mem_type flag
+					CHECK_VALUE_NON_NEGATIVE(user_param->cuda_device_id,int,"CUDA device",not_int_ptr);
+					user_param->memory_type = MEMORY_CUDA;
+					user_param->cuda_mem_type = CUDA_MEM_BOUNCE;
+					user_param->memory_create = cuda_memory_create;
+					use_bounce_buffer_flag = 0;
+				}
 				if (use_cuda_bus_id_flag) {
 					user_param->cuda_device_bus_id = strdup(optarg);
 					printf("Got PCIe address of: %s\n", user_param->cuda_device_bus_id);
@@ -3492,7 +3498,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 					user_param->use_cuda_pcie_mapping = 1;
 					use_cuda_pcie_mapping_flag = 0;
 				}
-				if (cuda_mem_type_flag) {
+				if (cuda_mem_type_flag) { //TEO_TODO: For full robustness this should also take into account CUDA_MEM_BOUNCE
 					user_param->cuda_mem_type = strtol(optarg,NULL,0);
 					if (user_param->memory_type != MEMORY_CUDA) {
 						fprintf(stderr, "CUDA MEM TYPE cannot be used without CUDA\n");

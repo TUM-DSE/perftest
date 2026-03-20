@@ -30,6 +30,7 @@ static const char *cuda_mem_type_str[] = {
 	"CUDA_MEM_HOSTALLOC",
 	"CUDA_MEM_HOSTREGISTER",
 	"CUDA_MEM_MALLOC",
+	"CUDA_MEM_BOUNCE", // TEO
 	"CUDA_MEM_TYPES"
 };
 
@@ -46,6 +47,9 @@ struct cuda_memory_ctx {
 	bool use_pcie_mapping;
 	int driver_version;
 	int validation_active; /* 1 if plugin validation is active */
+	// TEO
+	void* gpu_mem_bounce;
+	void* cpu_mem_bounce;
 };
 
 static int init_gpu(struct cuda_memory_ctx *ctx)
@@ -288,6 +292,13 @@ static int cuda_allocate_device_memory_buffer(struct cuda_memory_ctx *cuda_ctx, 
 	return CUDA_SUCCESS;
 }
 
+
+static int cuda_allocate_bounce_buffer(struct cuda_memory_ctx *cuda_ctx, uint64_t size, int *dmabuf_fd,
+		uint64_t *dmabuf_offset, void **addr, bool *can_init) {
+	printf(" >> Allocating memory for bounce buffer!!!");
+	exit(0);
+}
+
 int cuda_memory_allocate_buffer(struct memory_ctx *ctx, int alignment, uint64_t size, int *dmabuf_fd,
 				uint64_t *dmabuf_offset, void **addr, bool *can_init) {
 	int error;
@@ -311,6 +322,10 @@ int cuda_memory_allocate_buffer(struct memory_ctx *ctx, int alignment, uint64_t 
 
 			*addr = (void *)d_ptr;
 			*can_init = false;
+			break;
+		case CUDA_MEM_BOUNCE:
+			error = cuda_allocate_bounce_buffer(cuda_ctx. size, dmabuf_fd, dmabuf_offset, addr, can_init);
+			// TEO_TODO: Handle error somehow
 			break;
 
 		case CUDA_MEM_MALLOC:
@@ -555,13 +570,6 @@ static void cuda_validation_destroy(struct memory_ctx *ctx)
 		}
 		cuda_ctx->validation_active = 0;
 	}
-}
-
-
-struct memory_ctx *cuda_bounce_buffer_memory_create(struct perftest_parameters *params)
-{
-	// TEO_TODO: Implement
-	return NULL;
 }
 
 struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
