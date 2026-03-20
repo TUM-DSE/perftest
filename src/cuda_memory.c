@@ -46,6 +46,13 @@ struct cuda_memory_ctx {
 	int validation_active; /* 1 if plugin validation is active */
 };
 
+struct cuda_bounce_memory_ctx {
+	struct cuda_memory_ctx  cuda;       /* must be first */
+	void                   *gpu_ptr;    /* cuMemAlloc device buffer     */
+	void                   *bounce_ptr; /* cuMemAllocHost pinned buffer  */
+	uint64_t                bounce_size;
+};
+
 static int init_gpu(struct cuda_memory_ctx *ctx)
 {
 	int cuda_device_id = ctx->device_id;

@@ -63,12 +63,13 @@ inline bool cuda_gpu_touch_supported() {
  * Must be first member so &bctx->cuda == (void *)bctx, keeping free() and
  * container_of() correct when cuda_memory_init/destroy operate on it.
  */
-struct cuda_bounce_memory_ctx {
-	struct cuda_memory_ctx  cuda;       /* must be first */
-	void                   *gpu_ptr;    /* cuMemAlloc device buffer     */
-	void                   *bounce_ptr; /* cuMemAllocHost pinned buffer  */
-	uint64_t                bounce_size;
-};
+struct cuda_bounce_memory_ctx; 
+//{
+//	struct cuda_memory_ctx  cuda;       /* must be first */
+//	void                   *gpu_ptr;    /* cuMemAlloc device buffer     */
+//	void                   *bounce_ptr; /* cuMemAllocHost pinned buffer  */
+//	uint64_t                bounce_size;
+//};
 
 struct memory_ctx *cuda_bounce_memory_create(struct perftest_parameters *params);
 
