@@ -652,6 +652,11 @@ static void usage(const char *argv0, VerbType verb, TestType tst, int connection
 			printf("      --cuda_mem_type=<value>");
 			printf(" Set CUDA memory type <value>=0(device,default),1(managed),4(malloc)\n");
 
+			printf("      --use_cuda_bounce=<cuda device id>");
+			printf(" Alloc GPU buf + pinned host bounce buf; cudaMemcpy(GPU->host) before each RDMA post.\n");
+			printf("      Benchmarks the full GPU->CPU->RDMA pipeline without GPUDirect.\n");
+			printf("      The GPU is on the CLIENT side for all verbs.\n");
+			printf("      Supported: ib_write_bw, ib_read_bw, ib_read_lat.\n");
 			printf("      --use_cuda_bus_id=<cuda full BUS id>");
 			printf(" Use CUDA specific device, based on its full PCIe address, for GPUDirect RDMA testing\n");
 
@@ -2776,6 +2781,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	static int use_cuda_bus_id_flag = 0;
 	static int use_cuda_dmabuf_flag = 0;
 	static int use_cuda_pcie_mapping_flag = 0;
+	static int use_cuda_bounce_flag = 0;
 	static int use_data_direct_flag = 0;
 	static int cuda_mem_type_flag = 0;
 	static int use_rocm_flag = 0;
@@ -2972,6 +2978,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 			{ .name = "use_cuda_bus_id",	.has_arg = 1, .flag = &use_cuda_bus_id_flag, .val = 1},
 			{ .name = "use_cuda_dmabuf",	.has_arg = 0, .flag = &use_cuda_dmabuf_flag, .val = 1},
 			{ .name = "use_cuda_pcie_mapping", .has_arg = 0, .flag = &use_cuda_pcie_mapping_flag, .val = 1},
+			{ .name = "use_cuda_bounce",       .has_arg = 1, .flag = &use_cuda_bounce_flag,       .val = 1},
 			{ .name = "use_data_direct",	.has_arg = 0, .flag = &use_data_direct_flag, .val = 1},
 			{ .name = "cuda_mem_type",	.has_arg = 1, .flag = &cuda_mem_type_flag, .val = 1},
 			{ .name = "use_rocm",		.has_arg = 1, .flag = &use_rocm_flag, .val = 1},
@@ -3432,6 +3439,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				/* We statically define memory type options so check if requested option is actually supported. */
 				if (((use_cuda_flag || use_cuda_bus_id_flag) && !cuda_memory_supported()) ||
 				    (use_cuda_dmabuf_flag && !cuda_memory_dmabuf_supported()) ||
+				    (use_cuda_bounce_flag && !cuda_bounce_memory_supported()) ||
 				    (use_rocm_flag && !rocm_memory_supported()) ||
 				    (use_rocm_dmabuf_flag && !rocm_memory_dmabuf_supported()) ||
 				    (use_neuron_flag && !neuron_memory_supported()) ||
@@ -3453,7 +3461,10 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				    (mmap_file_flag || use_mlu_flag || use_neuron_flag || use_hl_flag ||
 						use_ib_dm_dmabuf_flag ||
 					 (use_rocm_flag && user_param->memory_type != MEMORY_ROCM) ||
-				     ((use_cuda_flag || use_cuda_bus_id_flag) && user_param->memory_type != MEMORY_CUDA))) {
+				     ((use_cuda_flag || use_cuda_bus_id_flag) && user_param->memory_type != MEMORY_CUDA))) ||
+				     (use_cuda_bounce_flag &&
+				      user_param->memory_type != MEMORY_HOST &&
+				      user_param->memory_type != MEMORY_CUDA_BOUNCE))) {
 					fprintf(stderr, " Can't use multiple memory types\n");
 					return FAILURE;
 				}
@@ -3486,6 +3497,12 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				if (use_cuda_pcie_mapping_flag) {
 					user_param->use_cuda_pcie_mapping = 1;
 					use_cuda_pcie_mapping_flag = 0;
+				}
+				if (use_cuda_bounce_flag) {
+					CHECK_VALUE_NON_NEGATIVE(user_param->cuda_device_id,int,"CUDA device",not_int_ptr);
+					user_param->memory_type   = MEMORY_CUDA_BOUNCE;
+					user_param->memory_create = cuda_bounce_memory_create;
+					use_cuda_bounce_flag = 0;
 				}
 				if (cuda_mem_type_flag) {
 					user_param->cuda_mem_type = strtol(optarg,NULL,0);

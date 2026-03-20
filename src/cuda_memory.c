@@ -578,3 +578,137 @@ struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
 
 	return &ctx->base;
 }
+
+#ifdef HAVE_CUDA
+/* =========================================================================
+ * Bounce-buffer memory backend
+ * =========================================================================
+ * allocate_buffer() performs two allocations:
+ *   1. cuMemAlloc        -> GPU device buffer  (data source)
+ *   2. cuMemAllocHost    -> pinned host buffer (registered as the RDMA MR)
+ * It returns the HOST pointer via *addr so that ibv_reg_mr() in
+ * perftest_resources.c registers ordinary DRAM — no GPUDirect required.
+ *
+ * cuda_bounce_copy() uses cuMemcpy (driver API, unified addressing).
+ * cuMemAllocHost memory is mapped into the CUDA VA space and is a valid
+ * CUdeviceptr, so a single cuMemcpy handles DtoH without the Runtime API.
+ * =========================================================================
+ */
+
+#define BOUNCE_PAGE_SIZE ACCEL_PAGE_SIZE
+
+static int cuda_bounce_allocate_buffer(struct memory_ctx *ctx, int alignment,
+				       uint64_t size, int *dmabuf_fd,
+				       uint64_t *dmabuf_offset, void **addr,
+				       bool *can_init)
+{
+	struct cuda_bounce_memory_ctx *bctx =
+		container_of(ctx, struct cuda_bounce_memory_ctx, cuda.base);
+	size_t buf_size = (size + BOUNCE_PAGE_SIZE - 1) & ~(BOUNCE_PAGE_SIZE - 1);
+	CUdeviceptr d_gpu;
+	void *h_bounce;
+	CUresult err;
+
+	err = p_cuMemAlloc(&d_gpu, buf_size);
+	if (err != CUDA_SUCCESS) {
+		fprintf(stderr, "cuda_bounce: cuMemAlloc(%zu) failed: %d\n",
+			buf_size, err);
+		return FAILURE;
+	}
+	bctx->gpu_ptr = (void *)d_gpu;
+
+	err = p_cuMemAllocHost(&h_bounce, buf_size);
+	if (err != CUDA_SUCCESS) {
+		fprintf(stderr, "cuda_bounce: cuMemAllocHost(%zu) failed: %d\n",
+			buf_size, err);
+		p_cuMemFree(d_gpu);
+		bctx->gpu_ptr = NULL;
+		return FAILURE;
+	}
+	bctx->bounce_ptr  = h_bounce;
+	bctx->bounce_size = buf_size;
+	memset(h_bounce, 0, buf_size);
+
+	/* Return host pointer — ibv_reg_mr() will register plain DRAM */
+	*addr          = h_bounce;
+	*dmabuf_fd     = 0;
+	*dmabuf_offset = 0;
+	*can_init      = false;
+
+	printf("cuda_bounce: gpu=%p  host_bounce=%p  size=%zu\n",
+	       bctx->gpu_ptr, bctx->bounce_ptr, buf_size);
+	return SUCCESS;
+}
+
+static int cuda_bounce_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,
+				   void *addr, uint64_t size)
+{
+	struct cuda_bounce_memory_ctx *bctx =
+		container_of(ctx, struct cuda_bounce_memory_ctx, cuda.base);
+
+	if (bctx->bounce_ptr) {
+		p_cuMemFreeHost(bctx->bounce_ptr);
+		bctx->bounce_ptr  = NULL;
+		bctx->bounce_size = 0;
+	}
+	if (bctx->gpu_ptr) {
+		p_cuMemFree((CUdeviceptr)bctx->gpu_ptr);
+		bctx->gpu_ptr = NULL;
+	}
+	return SUCCESS;
+}
+
+struct memory_ctx *cuda_bounce_memory_create(struct perftest_parameters *params)
+{
+	struct cuda_bounce_memory_ctx *bctx;
+
+	bctx = calloc(1, sizeof(*bctx));
+	if (!bctx) {
+		fprintf(stderr, "cuda_bounce_memory_create: out of memory\n");
+		return NULL;
+	}
+
+	/*
+	 * Reuse cuda_memory_init/destroy for GPU context lifecycle.
+	 * Override only allocate_buffer and free_buffer.
+	 */
+	bctx->cuda.base.init                  = cuda_memory_init;
+	bctx->cuda.base.destroy               = cuda_memory_destroy;
+	bctx->cuda.base.allocate_buffer       = cuda_bounce_allocate_buffer;
+	bctx->cuda.base.free_buffer           = cuda_bounce_free_buffer;
+	bctx->cuda.base.copy_host_to_buffer   = cuda_memory_copy_host_buffer;
+	bctx->cuda.base.copy_buffer_to_host   = cuda_memory_copy_host_buffer;
+	bctx->cuda.base.copy_buffer_to_buffer = cuda_memory_copy_buffer_to_buffer;
+	/* validation not supported in bounce mode */
+	bctx->cuda.base.validation_init    = NULL;
+	bctx->cuda.base.validation_start   = NULL;
+	bctx->cuda.base.validation_stop    = NULL;
+	bctx->cuda.base.validation_destroy = NULL;
+
+	bctx->cuda.device_id                  = params->cuda_device_id;
+	bctx->cuda.device_bus_id              = params->cuda_device_bus_id;
+	bctx->cuda.mem_type                   = CUDA_MEM_DEVICE;
+	bctx->cuda.use_dmabuf                 = 0;
+	bctx->cuda.use_pcie_mapping           = 0;
+	bctx->cuda.gpu_touch                  = GPU_NO_TOUCH;
+	bctx->cuda.stop_touch_gpu_kernel_flag = NULL;
+	bctx->cuda.validation_active          = 0;
+
+	return &bctx->cuda.base;
+}
+
+int cuda_bounce_copy(struct cuda_bounce_memory_ctx *bctx, uint64_t size)
+{
+	CUresult err = p_cuMemcpy((CUdeviceptr)bctx->bounce_ptr,
+				  (CUdeviceptr)bctx->gpu_ptr,
+				  size);
+	if (err != CUDA_SUCCESS) {
+		fprintf(stderr, "cuda_bounce: cuMemcpy DtoH failed: %d\n", err);
+		return FAILURE;
+	}
+	return SUCCESS;
+}
+
+bool cuda_bounce_memory_supported(void) { return true; }
+
+#endif /* HAVE_CUDA */

@@ -1,0 +1,336 @@
+diff --git a/src/cuda_memory.c b/src/cuda_memory.c
+index 92948c2..562784a 100644
+--- a/src/cuda_memory.c
++++ b/src/cuda_memory.c
+@@ -578,3 +578,137 @@ struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
+ 
+ 	return &ctx->base;
+ }
++
++#ifdef HAVE_CUDA
++/* =========================================================================
++ * Bounce-buffer memory backend
++ * =========================================================================
++ * allocate_buffer() performs two allocations:
++ *   1. cuMemAlloc        -> GPU device buffer  (data source)
++ *   2. cuMemAllocHost    -> pinned host buffer (registered as the RDMA MR)
++ * It returns the HOST pointer via *addr so that ibv_reg_mr() in
++ * perftest_resources.c registers ordinary DRAM — no GPUDirect required.
++ *
++ * cuda_bounce_copy() uses cuMemcpy (driver API, unified addressing).
++ * cuMemAllocHost memory is mapped into the CUDA VA space and is a valid
++ * CUdeviceptr, so a single cuMemcpy handles DtoH without the Runtime API.
++ * =========================================================================
++ */
++
++#define BOUNCE_PAGE_SIZE ACCEL_PAGE_SIZE
++
++static int cuda_bounce_allocate_buffer(struct memory_ctx *ctx, int alignment,
++				       uint64_t size, int *dmabuf_fd,
++				       uint64_t *dmabuf_offset, void **addr,
++				       bool *can_init)
++{
++	struct cuda_bounce_memory_ctx *bctx =
++		container_of(ctx, struct cuda_bounce_memory_ctx, cuda.base);
++	size_t buf_size = (size + BOUNCE_PAGE_SIZE - 1) & ~(BOUNCE_PAGE_SIZE - 1);
++	CUdeviceptr d_gpu;
++	void *h_bounce;
++	CUresult err;
++
++	err = p_cuMemAlloc(&d_gpu, buf_size);
++	if (err != CUDA_SUCCESS) {
++		fprintf(stderr, "cuda_bounce: cuMemAlloc(%zu) failed: %d\n",
++			buf_size, err);
++		return FAILURE;
++	}
++	bctx->gpu_ptr = (void *)d_gpu;
++
++	err = p_cuMemAllocHost(&h_bounce, buf_size);
++	if (err != CUDA_SUCCESS) {
++		fprintf(stderr, "cuda_bounce: cuMemAllocHost(%zu) failed: %d\n",
++			buf_size, err);
++		p_cuMemFree(d_gpu);
++		bctx->gpu_ptr = NULL;
++		return FAILURE;
++	}
++	bctx->bounce_ptr  = h_bounce;
++	bctx->bounce_size = buf_size;
++	memset(h_bounce, 0, buf_size);
++
++	/* Return host pointer — ibv_reg_mr() will register plain DRAM */
++	*addr          = h_bounce;
++	*dmabuf_fd     = 0;
++	*dmabuf_offset = 0;
++	*can_init      = false;
++
++	printf("cuda_bounce: gpu=%p  host_bounce=%p  size=%zu\n",
++	       bctx->gpu_ptr, bctx->bounce_ptr, buf_size);
++	return SUCCESS;
++}
++
++static int cuda_bounce_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,
++				   void *addr, uint64_t size)
++{
++	struct cuda_bounce_memory_ctx *bctx =
++		container_of(ctx, struct cuda_bounce_memory_ctx, cuda.base);
++
++	if (bctx->bounce_ptr) {
++		p_cuMemFreeHost(bctx->bounce_ptr);
++		bctx->bounce_ptr  = NULL;
++		bctx->bounce_size = 0;
++	}
++	if (bctx->gpu_ptr) {
++		p_cuMemFree((CUdeviceptr)bctx->gpu_ptr);
++		bctx->gpu_ptr = NULL;
++	}
++	return SUCCESS;
++}
++
++struct memory_ctx *cuda_bounce_memory_create(struct perftest_parameters *params)
++{
++	struct cuda_bounce_memory_ctx *bctx;
++
++	bctx = calloc(1, sizeof(*bctx));
++	if (!bctx) {
++		fprintf(stderr, "cuda_bounce_memory_create: out of memory\n");
++		return NULL;
++	}
++
++	/*
++	 * Reuse cuda_memory_init/destroy for GPU context lifecycle.
++	 * Override only allocate_buffer and free_buffer.
++	 */
++	bctx->cuda.base.init                  = cuda_memory_init;
++	bctx->cuda.base.destroy               = cuda_memory_destroy;
++	bctx->cuda.base.allocate_buffer       = cuda_bounce_allocate_buffer;
++	bctx->cuda.base.free_buffer           = cuda_bounce_free_buffer;
++	bctx->cuda.base.copy_host_to_buffer   = cuda_memory_copy_host_buffer;
++	bctx->cuda.base.copy_buffer_to_host   = cuda_memory_copy_host_buffer;
++	bctx->cuda.base.copy_buffer_to_buffer = cuda_memory_copy_buffer_to_buffer;
++	/* validation not supported in bounce mode */
++	bctx->cuda.base.validation_init    = NULL;
++	bctx->cuda.base.validation_start   = NULL;
++	bctx->cuda.base.validation_stop    = NULL;
++	bctx->cuda.base.validation_destroy = NULL;
++
++	bctx->cuda.device_id                  = params->cuda_device_id;
++	bctx->cuda.device_bus_id              = params->cuda_device_bus_id;
++	bctx->cuda.mem_type                   = CUDA_MEM_DEVICE;
++	bctx->cuda.use_dmabuf                 = 0;
++	bctx->cuda.use_pcie_mapping           = 0;
++	bctx->cuda.gpu_touch                  = GPU_NO_TOUCH;
++	bctx->cuda.stop_touch_gpu_kernel_flag = NULL;
++	bctx->cuda.validation_active          = 0;
++
++	return &bctx->cuda.base;
++}
++
++int cuda_bounce_copy(struct cuda_bounce_memory_ctx *bctx, uint64_t size)
++{
++	CUresult err = p_cuMemcpy((CUdeviceptr)bctx->bounce_ptr,
++				  (CUdeviceptr)bctx->gpu_ptr,
++				  size);
++	if (err != CUDA_SUCCESS) {
++		fprintf(stderr, "cuda_bounce: cuMemcpy DtoH failed: %d\n", err);
++		return FAILURE;
++	}
++	return SUCCESS;
++}
++
++bool cuda_bounce_memory_supported(void) { return true; }
++
++#endif /* HAVE_CUDA */
+diff --git a/src/cuda_memory.h b/src/cuda_memory.h
+index 50559ee..e9f38f0 100644
+--- a/src/cuda_memory.h
++++ b/src/cuda_memory.h
+@@ -48,4 +48,57 @@ inline bool cuda_gpu_touch_supported() {
+ 
+ #endif
+ 
++
++
++/* ---- Bounce-buffer API -------------------------------------------------- */
++
++#ifdef HAVE_CUDA
++
++/*
++ * cuda_bounce_memory_ctx - wraps cuda_memory_ctx with a pinned host bounce
++ * buffer.  The client allocates a GPU buffer (cuMemAlloc) as the data source
++ * and a pinned host buffer (cuMemAllocHost) as the RDMA MR, so the NIC
++ * operates on ordinary DRAM with no GPUDirect / nvidia_peermem required.
++ *
++ * Must be first member so &bctx->cuda == (void *)bctx, keeping free() and
++ * container_of() correct when cuda_memory_init/destroy operate on it.
++ */
++struct cuda_bounce_memory_ctx {
++	struct cuda_memory_ctx  cuda;       /* must be first */
++	void                   *gpu_ptr;    /* cuMemAlloc device buffer     */
++	void                   *bounce_ptr; /* cuMemAllocHost pinned buffer  */
++	uint64_t                bounce_size;
++};
++
++struct memory_ctx *cuda_bounce_memory_create(struct perftest_parameters *params);
++
++/*
++ * cuda_bounce_copy - synchronous GPU->host copy (DtoH) using the driver-API
++ * cuMemcpy (unified addressing; no cudart dependency).  Call on the client
++ * before each RDMA post so the NIC reads up-to-date GPU data.
++ */
++int cuda_bounce_copy(struct cuda_bounce_memory_ctx *bctx, uint64_t size);
++
++bool cuda_bounce_memory_supported(void);
++
++#else  /* !HAVE_CUDA */
++
++struct cuda_bounce_memory_ctx;  /* opaque */
++
++static inline struct memory_ctx *
++cuda_bounce_memory_create(struct perftest_parameters *params)
++{
++	(void)params;
++	fprintf(stderr, "cuda_bounce: not compiled with CUDA support\n");
++	return NULL;
++}
++
++static inline int
++cuda_bounce_copy(struct cuda_bounce_memory_ctx *b, uint64_t s)
++{ (void)b; (void)s; return FAILURE; }
++
++static inline bool cuda_bounce_memory_supported(void) { return false; }
++
++#endif /* HAVE_CUDA */
++
+ #endif /* CUDA_MEMORY_H */
+diff --git a/src/perftest_parameters.c b/src/perftest_parameters.c
+index 347e99c..617ca68 100755
+--- a/src/perftest_parameters.c
++++ b/src/perftest_parameters.c
+@@ -652,6 +652,11 @@ static void usage(const char *argv0, VerbType verb, TestType tst, int connection
+ 			printf("      --cuda_mem_type=<value>");
+ 			printf(" Set CUDA memory type <value>=0(device,default),1(managed),4(malloc)\n");
+ 
++			printf("      --use_cuda_bounce=<cuda device id>");
++			printf(" Alloc GPU buf + pinned host bounce buf; cudaMemcpy(GPU->host) before each RDMA post.\n");
++			printf("      Benchmarks the full GPU->CPU->RDMA pipeline without GPUDirect.\n");
++			printf("      The GPU is on the CLIENT side for all verbs.\n");
++			printf("      Supported: ib_write_bw, ib_read_bw, ib_read_lat.\n");
+ 			printf("      --use_cuda_bus_id=<cuda full BUS id>");
+ 			printf(" Use CUDA specific device, based on its full PCIe address, for GPUDirect RDMA testing\n");
+ 
+@@ -2776,6 +2781,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
+ 	static int use_cuda_bus_id_flag = 0;
+ 	static int use_cuda_dmabuf_flag = 0;
+ 	static int use_cuda_pcie_mapping_flag = 0;
++	static int use_cuda_bounce_flag = 0;
+ 	static int use_data_direct_flag = 0;
+ 	static int cuda_mem_type_flag = 0;
+ 	static int use_rocm_flag = 0;
+@@ -2972,6 +2978,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
+ 			{ .name = "use_cuda_bus_id",	.has_arg = 1, .flag = &use_cuda_bus_id_flag, .val = 1},
+ 			{ .name = "use_cuda_dmabuf",	.has_arg = 0, .flag = &use_cuda_dmabuf_flag, .val = 1},
+ 			{ .name = "use_cuda_pcie_mapping", .has_arg = 0, .flag = &use_cuda_pcie_mapping_flag, .val = 1},
++			{ .name = "use_cuda_bounce",       .has_arg = 1, .flag = &use_cuda_bounce_flag,       .val = 1},
+ 			{ .name = "use_data_direct",	.has_arg = 0, .flag = &use_data_direct_flag, .val = 1},
+ 			{ .name = "cuda_mem_type",	.has_arg = 1, .flag = &cuda_mem_type_flag, .val = 1},
+ 			{ .name = "use_rocm",		.has_arg = 1, .flag = &use_rocm_flag, .val = 1},
+@@ -3432,6 +3439,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
+ 				/* We statically define memory type options so check if requested option is actually supported. */
+ 				if (((use_cuda_flag || use_cuda_bus_id_flag) && !cuda_memory_supported()) ||
+ 				    (use_cuda_dmabuf_flag && !cuda_memory_dmabuf_supported()) ||
++				    (use_cuda_bounce_flag && !cuda_bounce_memory_supported()) ||
+ 				    (use_rocm_flag && !rocm_memory_supported()) ||
+ 				    (use_rocm_dmabuf_flag && !rocm_memory_dmabuf_supported()) ||
+ 				    (use_neuron_flag && !neuron_memory_supported()) ||
+@@ -3453,7 +3461,10 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
+ 				    (mmap_file_flag || use_mlu_flag || use_neuron_flag || use_hl_flag ||
+ 						use_ib_dm_dmabuf_flag ||
+ 					 (use_rocm_flag && user_param->memory_type != MEMORY_ROCM) ||
+-				     ((use_cuda_flag || use_cuda_bus_id_flag) && user_param->memory_type != MEMORY_CUDA))) {
++				     ((use_cuda_flag || use_cuda_bus_id_flag) && user_param->memory_type != MEMORY_CUDA))) ||
++				     (use_cuda_bounce_flag &&
++				      user_param->memory_type != MEMORY_HOST &&
++				      user_param->memory_type != MEMORY_CUDA_BOUNCE))) {
+ 					fprintf(stderr, " Can't use multiple memory types\n");
+ 					return FAILURE;
+ 				}
+@@ -3487,6 +3498,12 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
+ 					user_param->use_cuda_pcie_mapping = 1;
+ 					use_cuda_pcie_mapping_flag = 0;
+ 				}
++				if (use_cuda_bounce_flag) {
++					CHECK_VALUE_NON_NEGATIVE(user_param->cuda_device_id,int,"CUDA device",not_int_ptr);
++					user_param->memory_type   = MEMORY_CUDA_BOUNCE;
++					user_param->memory_create = cuda_bounce_memory_create;
++					use_cuda_bounce_flag = 0;
++				}
+ 				if (cuda_mem_type_flag) {
+ 					user_param->cuda_mem_type = strtol(optarg,NULL,0);
+ 					if (user_param->memory_type != MEMORY_CUDA) {
+diff --git a/src/perftest_parameters.h b/src/perftest_parameters.h
+index 0970709..f9c5a44 100755
+--- a/src/perftest_parameters.h
++++ b/src/perftest_parameters.h
+@@ -454,6 +454,7 @@ enum memory_type {
+ 	MEMORY_HOST,
+ 	MEMORY_MMAP,
+ 	MEMORY_CUDA,
++	MEMORY_CUDA_BOUNCE,
+ 	MEMORY_ROCM,
+ 	MEMORY_NEURON,
+ 	MEMORY_HL,
+diff --git a/src/perftest_resources.c b/src/perftest_resources.c
+index 5ef88ad..1733183 100755
+--- a/src/perftest_resources.c
++++ b/src/perftest_resources.c
+@@ -28,6 +28,7 @@
+ #endif
+ 
+ #include "perftest_resources.h"
++#include "cuda_memory.h"
+ #include "raw_ethernet_resources.h"
+ #include "host_validation.h"
+ 
+@@ -4400,6 +4401,22 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
+ 				if (user_param->test_type == DURATION && user_param->state == END_STATE)
+ 					break;
+ 
++				/* CUDA bounce: copy GPU->host before posting so the NIC
++				 * reads fresh data. tposted is already stamped above, so
++				 * copy time is fully inside the measurement window. */
++				#ifdef HAVE_CUDA
++				if (user_param->memory_type == MEMORY_CUDA_BOUNCE) {
++					struct cuda_bounce_memory_ctx *bctx =
++						container_of(ctx->memory,
++							     struct cuda_bounce_memory_ctx,
++							     cuda.base);
++					if (cuda_bounce_copy(bctx, user_param->size)) {
++						return_value = FAILURE;
++						goto cleaning;
++					}
++				}
++				#endif
++
+ 			err = post_send_method(ctx, index, user_param);
+ 			if (err) {
+ 				fprintf(stderr,"Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n",index,ctx->scnt[index],err,user_param->tx_depth	);
+@@ -6082,6 +6099,19 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
+ 		if (user_param->test_type == ITERATIONS)
+ 			user_param->tposted[scnt++] = get_cycles();
+ 
++		/* CUDA bounce: same as run_iter_bw — copy after tposted stamp
++		 * so that copy + RDMA round-trip are both captured in delta[i]. */
++		#ifdef HAVE_CUDA
++		if (user_param->memory_type == MEMORY_CUDA_BOUNCE) {
++			struct cuda_bounce_memory_ctx *bctx =
++				container_of(ctx->memory,
++					     struct cuda_bounce_memory_ctx,
++					     cuda.base);
++			if (cuda_bounce_copy(bctx, user_param->size))
++				return FAILURE;
++		}
++		#endif
++
+ 		err = post_send_method(ctx, 0, user_param);
+ 
+ 		if (err) {

@@ -28,6 +28,7 @@
 #endif
 
 #include "perftest_resources.h"
+#include "cuda_memory.h"
 #include "raw_ethernet_resources.h"
 #include "host_validation.h"
 
@@ -4400,6 +4401,22 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				if (user_param->test_type == DURATION && user_param->state == END_STATE)
 					break;
 
+				/* CUDA bounce: copy GPU->host before posting so the NIC
+				 * reads fresh data. tposted is already stamped above, so
+				 * copy time is fully inside the measurement window. */
+				#ifdef HAVE_CUDA
+				if (user_param->memory_type == MEMORY_CUDA_BOUNCE) {
+					struct cuda_bounce_memory_ctx *bctx =
+						container_of(ctx->memory,
+							     struct cuda_bounce_memory_ctx,
+							     cuda.base);
+					if (cuda_bounce_copy(bctx, user_param->size)) {
+						return_value = FAILURE;
+						goto cleaning;
+					}
+				}
+				#endif
+
 			err = post_send_method(ctx, index, user_param);
 			if (err) {
 				fprintf(stderr,"Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n",index,ctx->scnt[index],err,user_param->tx_depth	);
@@ -6081,6 +6098,19 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 		}
 		if (user_param->test_type == ITERATIONS)
 			user_param->tposted[scnt++] = get_cycles();
+
+		/* CUDA bounce: same as run_iter_bw — copy after tposted stamp
+		 * so that copy + RDMA round-trip are both captured in delta[i]. */
+		#ifdef HAVE_CUDA
+		if (user_param->memory_type == MEMORY_CUDA_BOUNCE) {
+			struct cuda_bounce_memory_ctx *bctx =
+				container_of(ctx->memory,
+					     struct cuda_bounce_memory_ctx,
+					     cuda.base);
+			if (cuda_bounce_copy(bctx, user_param->size))
+				return FAILURE;
+		}
+		#endif
 
 		err = post_send_method(ctx, 0, user_param);
 
