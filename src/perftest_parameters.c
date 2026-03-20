@@ -3458,13 +3458,11 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				}
 				/* Memory types are mutually exclucive, make sure we were not already asked to use a different memory type. */
 				if (user_param->memory_type != MEMORY_HOST &&
-				    (mmap_file_flag || use_mlu_flag || use_neuron_flag || use_hl_flag ||
-						use_ib_dm_dmabuf_flag ||
-					 (use_rocm_flag && user_param->memory_type != MEMORY_ROCM) ||
-				     ((use_cuda_flag || use_cuda_bus_id_flag) && user_param->memory_type != MEMORY_CUDA))) ||
-				     (use_cuda_bounce_flag &&
-				      user_param->memory_type != MEMORY_HOST &&
-				      user_param->memory_type != MEMORY_CUDA_BOUNCE))) {
+						(mmap_file_flag || use_mlu_flag || use_neuron_flag || use_hl_flag ||
+						 use_ib_dm_dmabuf_flag ||
+						 (use_rocm_flag && user_param->memory_type != MEMORY_ROCM) ||
+						 ((use_cuda_flag || use_cuda_bus_id_flag) && user_param->memory_type != MEMORY_CUDA) ||
+						 (use_cuda_bounce_flag && user_param->memory_type != MEMORY_CUDA_BOUNCE))) {
 					fprintf(stderr, " Can't use multiple memory types\n");
 					return FAILURE;
 				}
