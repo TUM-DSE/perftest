@@ -47,6 +47,7 @@
 #include "perftest_resources.h"
 #include "perftest_parameters.h"
 #include "perftest_communication.h"
+#include "cuda_memory.h"
 
 /******************************************************************************
  *
@@ -251,6 +252,17 @@ int main(int argc, char *argv[])
 
 	/* Only Client post read request. */
 	if (user_param.machine == SERVER) {
+
+		/* CUDA bounce: pre-fill host bounce buffer from GPU so the NIC
+		 * serves up-to-date data when the client issues READs. */
+		if (user_param.memory_type == MEMORY_CUDA_BOUNCE) {
+			struct cuda_bounce_memory_ctx *bctx =
+				container_of(ctx.memory, struct cuda_bounce_memory_ctx, cuda.base);
+			if (cuda_bounce_copy(bctx, user_param.size)) {
+				fprintf(stderr, " cuda_bounce: pre-fill failed\n");
+				goto free_mem;
+			}
+		}
 
 		if (ctx_close_connection(&user_comm,my_dest,rem_dest)) {
 			fprintf(stderr,"Failed to close connection between server and client\n");

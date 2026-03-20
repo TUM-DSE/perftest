@@ -41,6 +41,7 @@
 #include "perftest_resources.h"
 #include "perftest_parameters.h"
 #include "perftest_communication.h"
+#include "cuda_memory.h"
 
 /******************************************************************************
  *
@@ -252,6 +253,17 @@ int main(int argc, char *argv[])
 
 	/* For half duplex tests, server just waits for client to exit */
 	if (user_param.machine == SERVER && !user_param.duplex) {
+
+		/* CUDA bounce: pre-fill host bounce buffer from GPU before signalling
+		 * client that the server MR is ready for READs. */
+		if (user_param.memory_type == MEMORY_CUDA_BOUNCE) {
+			struct cuda_bounce_memory_ctx *bctx =
+				container_of(ctx.memory, struct cuda_bounce_memory_ctx, cuda.base);
+			if (cuda_bounce_copy(bctx, user_param.size)) {
+				fprintf(stderr, " cuda_bounce: pre-fill failed\n");
+				goto destroy_context;
+			}
+		}
 
 		if (ctx_hand_shake(&user_comm,&my_dest[0],&rem_dest[0])) {
 			fprintf(stderr," Failed to exchange data between server and clients\n");

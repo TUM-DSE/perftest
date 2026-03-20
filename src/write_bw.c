@@ -42,6 +42,8 @@
 #include "perftest_parameters.h"
 #include "perftest_resources.h"
 #include "perftest_communication.h"
+#include "cuda_memory.h"
+#include "cuda_loader.h"
 
 /******************************************************************************
  ******************************************************************************/
@@ -276,6 +278,19 @@ int main(int argc, char *argv[])
 		if (ctx_hand_shake(&user_comm,&my_dest[0],&rem_dest[0])) {
 			fprintf(stderr," Failed to exchange data between server and clients\n");
 			goto destroy_context;
+		}
+
+		/* CUDA bounce: after all WRITEs have been received into the bounce
+		 * buffer, copy the final contents into GPU memory (host->GPU). */
+		if (user_param.memory_type == MEMORY_CUDA_BOUNCE) {
+			struct cuda_bounce_memory_ctx *bctx =
+				container_of(ctx.memory, struct cuda_bounce_memory_ctx, cuda.base);
+			/* H2D: reuse cuMemcpy with arguments swapped */
+			CUresult _cu_err = p_cuMemcpy((CUdeviceptr)bctx->gpu_ptr,
+						      (CUdeviceptr)bctx->bounce_ptr,
+						      user_param.size);
+			if (_cu_err != CUDA_SUCCESS)
+				fprintf(stderr, " cuda_bounce: H2D copy failed: %d\n", _cu_err);
 		}
 
 		xchg_bw_reports(&user_comm, &my_bw_rep,&rem_bw_rep,atof(user_param.rem_version));
