@@ -13,6 +13,8 @@
 
 static int kernel_plugin_initialized = 0;
 static void cuda_validation_destroy(struct memory_ctx *ctx);
+// TEO
+static bool bounce_buffer_active = false;
 
 #define CUCHECK(stmt) \
 	do { \
@@ -425,6 +427,10 @@ bool cuda_gpu_touch_supported() {
 #endif
 }
 
+// TEO
+bool cuda_bounce_buffer_active() {
+	return bounce_buffer_active;
+}
 
 static int ensure_kernel_plugin_loaded(void)
 {
@@ -549,6 +555,13 @@ static void cuda_validation_destroy(struct memory_ctx *ctx)
 		}
 		cuda_ctx->validation_active = 0;
 	}
+}
+
+
+struct memory_ctx *cuda_bounce_buffer_memory_create(struct perftest_parameters *params)
+{
+	// TEO_TODO: Implement
+	return NULL;
 }
 
 struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {

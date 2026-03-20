@@ -49,12 +49,15 @@ struct validation_config;
 struct memory_ctx {
 	int (*init)(struct memory_ctx *ctx);
 	int (*destroy)(struct memory_ctx *ctx);
+	//TEO_TODO: Extend this with bounce buffer such that it allocates `size` on GPU AND on CPU
+	//The CPU buffer should be returned to use for normal RDMA operations.
 	int (*allocate_buffer)(struct memory_ctx *ctx, int alignment, uint64_t size, int *dmabuf_fd,
 			       uint64_t *dmabuf_offset, void **addr, bool *can_init);
 	int (*free_buffer)(struct memory_ctx *ctx, int dmabuf_fd, void *addr, uint64_t size);
 	void *(*copy_host_to_buffer)(void *dest, const void *src, size_t size);
 	void *(*copy_buffer_to_host)(void *dest, const void *src, size_t size);
 	void *(*copy_buffer_to_buffer)(void *dest, const void *src, size_t size);
+	// TEO_TODO: Add a copy_to_bounce_buffer function to be called in the iter_bw and iter_lat functions
 	/* Data validation interface (optional - NULL if not supported by memory type) */
 	int (*validation_init)(struct memory_ctx *ctx,
 		const struct validation_config *cfg);
