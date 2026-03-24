@@ -221,11 +221,18 @@ int cuda_copy_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 	}
 
 	struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
-	printf(">> Doing bounce buffer copy\n");
-	printf(">> GPU Addr: %p, CPU addr: %p, size: %d",
-			cuda_ctx->gpu_bounce_buf_addr, cuda_ctx->cpu_bounce_buf_addr, size);
+	//printf(">> Doing bounce buffer copy\n");
+	//printf(">> GPU Addr: %p, CPU addr: %p, size: %d",
+	//	cuda_ctx->gpu_bounce_buf_addr, cuda_ctx->cpu_bounce_buf_addr, size);
+	CUdeviceptr cpu_side = (CUdeviceptr)cuda_ctx->cpu_bounce_buf_addr;
+	CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
+	int error = p_cuMemcpy(cpu_side, gpu_side, size);
+	if (error != CUDA_SUCCESS) {
+		fprintf(stderr, "cuda_bounce: cuMemcpy DtoH failed: %d\n", error);
+		return FAILURE;
+	}
 
-	return FAILURE;
+	return SUCCESS;
 }
 
 static int cuda_allocate_bounce_buffer(struct cuda_memory_ctx *cuda_ctx, uint64_t size, int *dmabuf_fd,
@@ -273,7 +280,7 @@ static int cuda_allocate_bounce_buffer(struct cuda_memory_ctx *cuda_ctx, uint64_
 
 	*can_init = true; // TEO_TODO: This could probably be true in our case
 
-	printf("CUDA bounce: gpu=%p, host_bounce=%p, buf_size=%d\n",
+	printf("CUDA bounce: gpu=%p, host_bounce=%p, buf_size=%ld\n",
 			cuda_ctx->gpu_bounce_buf_addr, cuda_ctx->cpu_bounce_buf_addr, buf_size);
 
 	return SUCCESS;
