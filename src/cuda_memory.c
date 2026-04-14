@@ -262,13 +262,8 @@ static int cuda_allocate_bounce_buffer(struct cuda_memory_ctx *cuda_ctx, uint64_
 
 	cuda_ctx->gpu_bounce_buf_addr = (void*)d_A;
 
-#ifdef HAVE_CUDA_DMABUF
-	printf("CUDA dmabuf not supported yet by bounce buffer implementation\n");
-	return FAILURE;
-#else
 	*dmabuf_fd = 0;
 	*dmabuf_offset = 0;
-#endif
 
 	// Allocate CPU side buffer
 	error = p_cuMemAllocHost(addr, buf_size);
