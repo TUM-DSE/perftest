@@ -57,3 +57,5 @@ debian/compat
 debian/*.log
 debian/files
 debian/perftest
+
+compile_commands.json
