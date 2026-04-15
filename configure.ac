@@ -29,7 +29,7 @@
 # SOFTWARE.
 dnl Process this file with autoconf to produce a configure script.
 
-AC_INIT([perftest],[6.28],[linux-rdma@vger.kernel.org])
+AC_INIT([perftest],[6.29],[linux-rdma@vger.kernel.org])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([config])
 AC_CONFIG_MACRO_DIR([m4])
@@ -65,6 +65,11 @@ AS_IF([test "x$enable_cq_ex" = "xno"],
       [USE_CQ_EX=no],
         [USE_CQ_EX=yes])
 
+AC_ARG_ENABLE([num_sge_zero],
+  [AS_HELP_STRING([--enable-num_sge_zero], [Allows using num_sge=0 with RDMA Write With IMM verb])],
+  [AC_DEFINE([HAVE_NUM_SGE_ZERO], [1], [Use num_sge=0 with RDMA Write With IMM])],
+  [])
+	
 AC_PREFIX_DEFAULT("/usr")
 
 AC_PROG_CC
@@ -572,6 +577,11 @@ if [test $HAVE_IBV_WR_API = yes]; then
 		    [struct efadv_qp_init_attr *efa_attr; int x = efa_attr->sl;], [HAVE_SRD_QP_SL_SUPPORT=yes], [HAVE_SRD_QP_SL_SUPPORT=no])
 	if [test $HAVE_SRD_QP_SL_SUPPORT = yes]; then
 		AC_DEFINE([HAVE_SRD_QP_SL], [1], [Have SRD QP SL support])
+	fi
+	AC_TRY_LINK([#include <infiniband/efadv.h>],
+		    [int x = EFADV_QP_FLAGS_INLINE_WRITE;], [HAVE_WRITE_INLINE_SRD=yes], [HAVE_WRITE_INLINE_SRD=no])
+	if [test $HAVE_WRITE_INLINE_SRD = yes]; then
+		AC_DEFINE([HAVE_SRD_WRITE_INLINE], [1], [Have SRD with RDMA write inline support])
 	fi
 else
 	AC_CHECK_LIB([efa], [efadv_create_driver_qp], [HAVE_SRD=yes], [HAVE_SRD=no])
