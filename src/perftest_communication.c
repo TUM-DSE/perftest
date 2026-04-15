@@ -2582,15 +2582,26 @@ error:
 int rdma_cm_route_handler(struct pingpong_context *ctx,
 		struct perftest_parameters *user_param, struct rdma_cm_id *cma_id)
 {
-	int rc, connection_index;
+	int rc, connection_index = -1;
 	char *error_message;
 	struct rdma_conn_param conn_param;
 
+	/* find the matching QP index for the given cma_id */
+	for (int i = 0; i < user_param->num_of_qps; i++) {
+		if (ctx->cma_master.nodes[i].cma_id == cma_id) {
+			connection_index = i;
+			break;
+		}
+	}
+	if (connection_index == -1) {
+		error_message = "Failed to find matching CM node.";
+		goto error;
+	}
+
 	ctx->context = cma_id->verbs;
-	connection_index = ctx->cma_master.connection_index;
 
 	// Initialization of client contexts in case of first connection:
-	if (connection_index == 0) {
+	if ((user_param->use_event && !ctx->send_channel)|| !ctx->pd) {
 		rc = ctx_init(ctx, user_param);
 		if (rc) {
 			error_message = "Failed to initialize RDMA contexts.";
@@ -2599,10 +2610,15 @@ int rdma_cm_route_handler(struct pingpong_context *ctx,
 	}
 
 	ctx->cm_id = cma_id;
-	rc = create_qp_main(ctx, user_param, connection_index);
-	if (rc) {
-		error_message = "Failed to create QP.";
-		goto error;
+
+	/* Only create qp when it's not available
+	 * (i.e. avoid recreating qp during retry) */
+	if(!ctx->qp[connection_index]) {
+		rc = create_qp_main(ctx, user_param, connection_index);
+		if (rc) {
+			error_message = "Failed to create QP.";
+			goto error;
+		}
 	}
 
 	memset(&conn_param, 0, sizeof conn_param);
@@ -2620,11 +2636,13 @@ int rdma_cm_route_handler(struct pingpong_context *ctx,
 	rc = rdma_connect(cma_id, &conn_param);
 	if (rc) {
 		error_message = "Failed to connect through RDMA CM.";
+		/* IB core will destroy cm id if failed.
+		 * Set cma_id to NULL to avoid double free.*/
+		ctx->cm_id = NULL;
+		ctx->cma_master.nodes[connection_index].cma_id = NULL;
 		goto error;
 	}
 
-	ctx->cma_master.nodes[connection_index].connected = 1;
-	ctx->cma_master.connection_index++;
 	return rc;
 
 error:
@@ -2658,7 +2676,7 @@ int rdma_cm_connection_request_handler(struct pingpong_context *ctx,
 
 	ctx->context = cma_id->verbs;
 	// Initialization of server contexts in case of first connection:
-	if (connection_index == 0) {
+	if ((user_param->use_event && !ctx->send_channel)|| !ctx->pd) {
 		rc = ctx_init(ctx, user_param);
 		if (rc) {
 			error_message = "Failed to initialize RDMA contexts.";
@@ -2667,10 +2685,15 @@ int rdma_cm_connection_request_handler(struct pingpong_context *ctx,
 	}
 
 	ctx->cm_id = cm_node->cma_id;
-	rc = create_qp_main(ctx, user_param, connection_index);
-	if (rc) {
-		error_message = "Failed to create QP.";
-		goto error_2;
+
+	/* Only create qp when it's not available
+	 * (i.e. avoid recreating qp during retry) */
+	if(!ctx->qp[connection_index]) {
+		rc = create_qp_main(ctx, user_param, connection_index);
+		if (rc) {
+			error_message = "Failed to create QP.";
+			goto error_2;
+		}
 	}
 
 	memset(&conn_param, 0, sizeof(conn_param));
@@ -2752,6 +2775,16 @@ int rdma_cm_connection_established_handler(struct pingpong_context *ctx,
 	if (rc) {
 		error_message = "Failed to establish UD connection for RDMA CM.";
 		goto error;
+	}
+
+	/* Only mark the cm node as connected when ESTABLISHED is reached.
+	 * Prevent semi-connected states from escaping the cleanup mechanism.
+	 */
+	for (int i = 0; i < user_param->num_of_qps; i++) {
+		if (ctx->cma_master.nodes[i].cma_id == event->id) {
+			ctx->cma_master.nodes[i].connected = 1;
+			break;
+		}
 	}
 
 	if (user_param->machine == CLIENT) {
@@ -2991,19 +3024,24 @@ int _rdma_cm_client_connection(struct pingpong_context *ctx,
 	int i, rc;
 	char error_message[ERROR_MSG_SIZE] = "";
 
-	rc = rdma_cm_get_rdma_address(user_param, hints, &ctx->cma_master.rai);
-	if (rc) {
-		sprintf(error_message,
-			"Failed to get RDMA CM address - Error: %s.", gai_strerror(rc));
-		goto error;
+	if (!ctx->cma_master.rai) {
+		rc = rdma_cm_get_rdma_address(user_param, hints, &ctx->cma_master.rai);
+		if (rc) {
+			sprintf(error_message,
+				"Failed to get RDMA CM address - Error: %s.", gai_strerror(rc));
+			goto error;
+		}
 	}
 
 	for (i = 0; i < user_param->num_of_qps; i++) {
+		if (ctx->cma_master.nodes[i].connected) {
+			continue;
+		}
 		rc = rdma_resolve_addr(ctx->cma_master.nodes[i].cma_id,
 			ctx->cma_master.rai->ai_src_addr,
 			ctx->cma_master.rai->ai_dst_addr, 2000);
 		if (rc) {
-			sprintf(error_message, "Failed to resolve RDMA CM address.");
+			sprintf(error_message, "Failed to resolve RDMA CM address for cm node %d.", i);
 			rdma_cm_connect_error(ctx);
 			goto error;
 		}
@@ -3031,6 +3069,14 @@ int rdma_cm_client_connection(struct pingpong_context *ctx,
 	char error_message[ERROR_MSG_SIZE] = "";
 
 	for (i = 0; i < max_retries; i++) {
+		if (i > 0) {
+			rc = rdma_cm_allocate_nodes(ctx, user_param, hints, true);
+			if (rc) {
+				sprintf(error_message,
+					"Failed to reallocate RDMA CM nodes during retry.");
+				goto error;
+			}
+		}
 		rc = _rdma_cm_client_connection(ctx, user_param, hints);
 		if (!rc) {
 			return rc;
@@ -3049,6 +3095,100 @@ int rdma_cm_client_connection(struct pingpong_context *ctx,
 
 error:
 	return error_handler(error_message);
+}
+
+/******************************************************************************
+ * Convert a sockaddr (IPv4 or IPv6) to a 16-byte GID suitable for
+ * comparison against the device's GID table.  Returns 0 on success.
+ ******************************************************************************/
+static int sockaddr_to_gid(const struct sockaddr *addr, union ibv_gid *gid)
+{
+	memset(gid, 0, sizeof(*gid));
+
+	if (addr->sa_family == AF_INET) {
+		const struct sockaddr_in *s4 = (const struct sockaddr_in *)addr;
+		gid->raw[10] = 0xff;
+		gid->raw[11] = 0xff;
+		memcpy(&gid->raw[12], &s4->sin_addr, 4);
+		return 0;
+	}
+
+	if (addr->sa_family == AF_INET6) {
+		const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)addr;
+		memcpy(gid->raw, &s6->sin6_addr, 16);
+		return 0;
+	}
+
+	return -1;
+}
+
+/******************************************************************************
+ * Scan the GID table on the given device/port and return the index whose
+ * entry matches 'target'.  Returns the index (>= 0) or -1 if not found.
+ ******************************************************************************/
+static int find_gid_index(struct ibv_context *context, uint8_t port,
+			  const union ibv_gid *target)
+{
+	struct ibv_port_attr port_attr;
+	union ibv_gid entry;
+	int i;
+
+	if (ibv_query_port(context, port, &port_attr))
+		return -1;
+
+	for (i = 0; i < port_attr.gid_tbl_len; i++) {
+		if (ibv_query_gid(context, port, i, &entry))
+			continue;
+		if (!memcmp(entry.raw, target->raw, sizeof(entry.raw)))
+			return i;
+	}
+
+	return -1;
+}
+
+/******************************************************************************
+ * After rdma_cm connection is established, the actual device, port, and GID
+ * may differ from what the user requested via --ib-dev / -x.  Refresh
+ * user_param so that subsequent header prints reflect reality.
+ ******************************************************************************/
+static void update_rdma_cm_params(struct pingpong_context *ctx,
+				  struct perftest_parameters *user_param,
+				  struct perftest_comm *comm)
+{
+	struct rdma_cm_id *cm_id;
+	struct sockaddr *src_addr;
+	union ibv_gid src_gid;
+	int idx;
+
+	cm_id = ctx->cma_master.nodes[0].cma_id;
+	if (!cm_id || !cm_id->verbs)
+		return;
+
+	free(user_param->ib_devname);
+	user_param->ib_devname = strdup(ibv_get_device_name(cm_id->verbs->device));
+
+	/* Similarly, the physical port may differ from what the user assumed. */
+	user_param->ib_port = cm_id->port_num;
+
+	/* Find the GID index that matches the source address rdma_cm actually
+	 * used: convert the resolved local sockaddr to a GID, then look it up
+	 * in the device's GID table. */
+	src_addr = rdma_get_local_addr(cm_id);
+	if (!src_addr)
+		return;
+
+	if (sockaddr_to_gid(src_addr, &src_gid))
+		return;
+
+	idx = find_gid_index(ctx->context, user_param->ib_port, &src_gid);
+	if (idx >= 0) {
+		user_param->gid_index = idx;
+		user_param->use_gid_user = 1;
+		/* comm->rdma_params is a separate copy used by
+		 * ctx_print_pingpong_data() — keep it in sync. */
+		if (comm && comm->rdma_params)
+			comm->rdma_params->gid_index = idx;
+	}
 }
 
 /******************************************************************************
@@ -3071,10 +3211,10 @@ int create_rdma_cm_connection(struct pingpong_context *ctx,
 		goto error;
 	}
 
-	rc = rdma_cm_allocate_nodes(ctx, user_param, &hints);
+	rc = rdma_cm_allocate_nodes(ctx, user_param, &hints, false);
 	if (rc) {
 		error_message = "Failed to allocate RDMA CM nodes.";
-		goto destroy_event_channel;
+		goto destroy_rdma_id;
 	}
 
 	rc = ctx_hand_shake(comm, &my_dest[0], &rem_dest[0]);
@@ -3092,8 +3232,7 @@ int create_rdma_cm_connection(struct pingpong_context *ctx,
 
 	if (rc) {
 		error_message = "Failed to create RDMA CM connection.";
-		free(hints.ai_src_addr);
-		goto destroy_event_channel;
+		goto destroy_rdma_id;
 	}
 
 	rc = ctx_hand_shake(comm, &my_dest[0], &rem_dest[0]);
@@ -3105,19 +3244,30 @@ int create_rdma_cm_connection(struct pingpong_context *ctx,
 
 	free(hints.ai_src_addr);
 
+	update_rdma_cm_params(ctx, user_param, comm);
+
 	return rc;
 
 
 destroy_rdma_id:
 	if (user_param->machine == CLIENT) {
-		for (i = 0; i < user_param->num_of_qps; i++)
-			rdma_destroy_id(ctx->cma_master.nodes[i].cma_id);
+		for (i = 0; i < user_param->num_of_qps; i++) {
+			struct cma_node * cm_node = &ctx->cma_master.nodes[i];
+			if(cm_node && cm_node->cma_id)
+			{
+				rc = rdma_destroy_id(cm_node->cma_id);
+				if (rc) {
+					sprintf(error_message,
+						"Failed to destroy RDMA CM ID number %d.",
+						i);
+					goto error;
+				}
+				cm_node->cma_id = NULL;
+			}
+		}
 	}
-	free(ctx->cma_master.nodes);
 	free(hints.ai_src_addr);
-
-destroy_event_channel:
-	rdma_destroy_event_channel(ctx->cma_master.channel);
+	rdma_cm_destroy_master(ctx);
 
 error:
 	return error_handler(error_message);

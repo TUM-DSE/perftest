@@ -1182,6 +1182,7 @@ int alloc_ctx(struct pingpong_context *ctx,struct perftest_parameters *user_para
 		ALLOC(user_param->tcompleted, cycles_t, 1);
 
 	ALLOC(ctx->qp, struct ibv_qp*, user_param->num_of_qps);
+	memset(ctx->qp, 0, user_param->num_of_qps * sizeof (struct ibv_qp*));
 	#ifdef HAVE_IBV_WR_API
 	ALLOC(ctx->qpx, struct ibv_qp_ex*, user_param->num_of_qps);
 	#ifdef HAVE_MLX5DV
@@ -1418,6 +1419,22 @@ void dealloc_ctx(struct pingpong_context *ctx,struct perftest_parameters *user_p
 	}
 }
 
+void rdma_cm_destroy_master(struct pingpong_context *ctx)
+{
+	if (ctx->cma_master.channel) {
+		rdma_destroy_event_channel(ctx->cma_master.channel);
+		ctx->cma_master.channel = NULL;
+	}
+	if (ctx->cma_master.rai) {
+		rdma_freeaddrinfo(ctx->cma_master.rai);
+		ctx->cma_master.rai = NULL;
+	}
+	if (ctx->cma_master.nodes) {
+		free(ctx->cma_master.nodes);
+		ctx->cma_master.nodes = NULL;
+	}
+}
+
 /******************************************************************************
  *
  ******************************************************************************/
@@ -1445,7 +1462,7 @@ int destroy_ctx(struct pingpong_context *ctx,
 		rdma_cm_destroy_qps(ctx, user_param);
 	}
 
-	if (user_param->work_rdma_cm == ON)
+	if (user_param->work_rdma_cm == ON && ctx->cm_id)
 		rdma_disconnect(ctx->cm_id);
 
 	/* in dc with bidirectional,
@@ -1464,15 +1481,21 @@ int destroy_ctx(struct pingpong_context *ctx,
 				(user_param->tst == LAT || user_param->machine == CLIENT || user_param->duplex)) ||
 				(user_param->connection_type == SRD && (user_param->verb == READ || user_param->verb == WRITE || user_param->verb == WRITE_IMM))) {
 
-			if (user_param->ah_allocated == 1 && ibv_destroy_ah(ctx->ah[i])) {
-				fprintf(stderr, "Failed to destroy AH\n");
-				test_result = 1;
+			if (user_param->ah_allocated == 1 && ctx->ah && ctx->ah[i]) {
+				if (ibv_destroy_ah(ctx->ah[i])) {
+					fprintf(stderr, "Failed to destroy AH\n");
+					test_result = 1;
+				}
+				ctx->ah[i] = NULL;
 			}
 		}
 		if (user_param->work_rdma_cm == OFF) {
-			if (ibv_destroy_qp(ctx->qp[i])) {
-				fprintf(stderr, "Couldn't destroy QP - %s\n", strerror(errno));
-				test_result = 1;
+			if (ctx->qp && ctx->qp[i]) {
+				if (ibv_destroy_qp(ctx->qp[i])) {
+					fprintf(stderr, "Couldn't destroy QP - %s\n", strerror(errno));
+					test_result = 1;
+				}
+				ctx->qp[i] = NULL;
 			}
 		}
 	}
@@ -1519,6 +1542,10 @@ int destroy_ctx(struct pingpong_context *ctx,
 		}
 	}
 
+	for (i = 0; i < dereg_counter; i++) {
+		ctx->memory->free_buffer(ctx->memory, 0, ctx->buf[i], ctx->buff_size);
+	}
+
 	if (ctx->send_rcredit) {
 		if (ibv_dereg_mr(ctx->credit_mr)) {
 			fprintf(stderr, "Failed to deregister send credit MR\n");
@@ -1561,13 +1588,15 @@ int destroy_ctx(struct pingpong_context *ctx,
 	}
 	#endif
 
-	#ifdef HAVE_TD_API
-	if (user_param->no_lock) {
+	if (ctx->pad && ctx->pad != ctx->pd) {
 		if (ibv_dealloc_pd(ctx->pad)) {
 			fprintf(stderr, "Failed to deallocate PAD - %s\n", strerror(errno));
 			test_result = 1;
 		}
+	}
 
+	#ifdef HAVE_TD_API
+	if (user_param->no_lock && ctx->td) {
 		if (ibv_dealloc_td(ctx->td)) {
 			fprintf(stderr, "Failed to deallocate TD - %s\n", strerror(errno));
 			test_result = 1;
@@ -1579,12 +1608,14 @@ int destroy_ctx(struct pingpong_context *ctx,
 		fprintf(stderr, "Failed to deallocate PD - %s\n", strerror(errno));
 		test_result = 1;
 	}
+	ctx->pd = NULL;
 
 	if (ctx->send_channel) {
 		if (ibv_destroy_comp_channel(ctx->send_channel)) {
 			fprintf(stderr, "Failed to close send event channel\n");
 			test_result = 1;
 		}
+		ctx->send_channel = NULL;
 	}
 
 	if (ctx->recv_channel) {
@@ -1592,37 +1623,39 @@ int destroy_ctx(struct pingpong_context *ctx,
 			fprintf(stderr, "Failed to close receive event channel\n");
 			test_result = 1;
 		}
+		ctx->recv_channel = NULL;
 	}
 
 	if (user_param->use_rdma_cm == OFF) {
-
 		if (ibv_close_device(ctx->context)) {
 			fprintf(stderr, "Failed to close device context\n");
 			test_result = 1;
 		}
 	}
 
-	for (i = 0; i < dereg_counter; i++) {
-		ctx->memory->free_buffer(ctx->memory, 0, ctx->buf[i], ctx->buff_size);
-	}
-
 	free(ctx->qp);
+	ctx->qp = NULL;
+
 	#ifdef HAVE_IBV_WR_API
 	free(ctx->qpx);
+	ctx->qpx = NULL;
 	free(ctx->r_dctn);
+	ctx->r_dctn = NULL;
 	#ifdef HAVE_DCS
 	free(ctx->dci_stream_id);
+	ctx->dci_stream_id = NULL;
 	#endif
 	#endif
 	#ifdef HAVE_AES_XTS
 	if(user_param->aes_xts) {
 		free(ctx->dek);
+		ctx->dek = NULL;
 		free(ctx->mkey);
+		ctx->mkey = NULL;
 	}
 	#endif
 
 	if ((user_param->tst == BW || user_param->tst == LAT_BY_BW ) && (user_param->machine == CLIENT || user_param->duplex)) {
-
 		free(user_param->tposted);
 		free(user_param->tcompleted);
 		free(ctx->my_addr);
@@ -1656,7 +1689,11 @@ int destroy_ctx(struct pingpong_context *ctx,
 	}
 
 	if (user_param->work_rdma_cm == ON) {
+		for (i = 0; i < user_param->num_of_qps; i++) {
+			ctx->cma_master.nodes[i].connected = 0;
+		}
 		rdma_cm_destroy_cma(ctx, user_param);
+		rdma_cm_destroy_master(ctx);
 	}
 
 	if (user_param->counter_ctx) {
@@ -1832,15 +1869,13 @@ int create_reg_cqs(struct pingpong_context *ctx,
 		.comp_vector = user_param->eq_num,
 	};
 
-	#ifdef HAVE_TD_API
-	if (user_param->no_lock) {
+	if (ctx->pad != ctx->pd) {
 		send_cq_attr.parent_domain = ctx->pad;
 		send_cq_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_PD;
 	}
-	#endif
 	ctx->send_cq = ibv_cq_ex_to_cq(ibv_create_cq_ex(ctx->context, &send_cq_attr));
 	if (!ctx->send_cq) {
-		if (!user_param->no_lock && errno == EOPNOTSUPP)
+		if (ctx->pad == ctx->pd && errno == EOPNOTSUPP)
 			goto cq_ex_not_supported;
 		fprintf(stderr, "Couldn't create CQ\n");
 		return FAILURE;
@@ -1853,12 +1888,10 @@ int create_reg_cqs(struct pingpong_context *ctx,
 			.channel = ctx->recv_channel,
 			.comp_vector = user_param->eq_num,
 		};
-		#ifdef HAVE_TD_API
-		if (user_param->no_lock) {
+		if (ctx->pad != ctx->pd) {
 			recv_cq_attr.parent_domain = ctx->pad;
 			recv_cq_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_PD;
 		}
-		#endif
 		ctx->recv_cq = ibv_cq_ex_to_cq(ibv_create_cq_ex(ctx->context, &recv_cq_attr));
 		if (!ctx->recv_cq) {
 			fprintf(stderr, "Couldn't create a receiver CQ\n");
@@ -2055,7 +2088,7 @@ static struct ibv_mr *register_mr_ex(struct pingpong_context *ctx,
 		in.dmah = ctx->dmah;
 	}
 
-	return ibv_reg_mr_ex(ctx->pd, &in);
+	return ibv_reg_mr_ex(ctx->pad, &in);
 }
 #endif
 
@@ -2108,7 +2141,7 @@ static struct ibv_mr *register_mr(struct pingpong_context *ctx,
 #endif
 	} else {
 		/* Regular memory registration using standard API */
-		return ibv_reg_mr(ctx->pd, ctx->buf[qp_index], ctx->buff_size, flags);
+		return ibv_reg_mr(ctx->pad, ctx->buf[qp_index], ctx->buff_size, flags);
 	}
 }
 
@@ -2533,21 +2566,28 @@ int ctx_init(struct pingpong_context *ctx, struct perftest_parameters *user_para
 		goto comp_channel;
 	}
 
+	int need_parent_domain = 0;
 	#ifdef HAVE_TD_API
-	/* Allocating the Thread domain, Parent domain. */
-	if (user_param->no_lock) {
-		struct ibv_td_init_attr td_attr = {0};
-		ctx->td = ibv_alloc_td(ctx->context, &td_attr);
-		if (!ctx->td) {
-			fprintf(stderr, "Couldn't allocate TD\n");
-			goto pd;
-		}
+	need_parent_domain |= user_param->no_lock;
+	#endif
 
+	if (need_parent_domain) {
 		struct ibv_parent_domain_init_attr pad_attr = {
 			.pd = ctx->pd,
-			.td = ctx->td,
 			.comp_mask = 0,
 		};
+
+		#ifdef HAVE_TD_API
+		if (user_param->no_lock) {
+			struct ibv_td_init_attr td_attr = {0};
+			ctx->td = ibv_alloc_td(ctx->context, &td_attr);
+			if (!ctx->td) {
+				fprintf(stderr, "Couldn't allocate TD\n");
+				goto pd;
+			}
+			pad_attr.td = ctx->td;
+		}
+		#endif
 
 		ctx->pad = ibv_alloc_parent_domain(ctx->context, &pad_attr);
 		if (!ctx->pad) {
@@ -2555,11 +2595,8 @@ int ctx_init(struct pingpong_context *ctx, struct perftest_parameters *user_para
 			goto td;
 		}
 	} else {
-	#endif
 		ctx->pad = ctx->pd;
-	#ifdef HAVE_TD_API
 	}
-	#endif
 
 
 	#ifdef HAVE_AES_XTS
@@ -2808,22 +2845,24 @@ dek:
 			mlx5dv_dek_destroy(ctx->dek[i]);
 #endif
 
-#ifdef HAVE_TD_API
-	if (user_param->no_lock)
+	if (ctx->pad && ctx->pad != ctx->pd)
 		ibv_dealloc_pd(ctx->pad);
 
 td:
-	if (user_param->no_lock)
+#ifdef HAVE_TD_API
+	if (user_param->no_lock && ctx->td)
 		ibv_dealloc_td(ctx->td);
-pd:
 #endif
-
+pd:
 	ibv_dealloc_pd(ctx->pd);
+	ctx->pd = NULL;
 
 comp_channel:
 	if (user_param->use_event) {
 		ibv_destroy_comp_channel(ctx->send_channel);
 		ibv_destroy_comp_channel(ctx->recv_channel);
+		ctx->send_channel = NULL;
+		ctx->recv_channel = NULL;
 	}
 
 	return FAILURE;
@@ -3052,6 +3091,12 @@ struct ibv_qp* ctx_qp_create(struct pingpong_context *ctx,
 		#ifdef HAVE_SRD_QP_SL
 		efa_attr.sl = user_param->sl;
 		#endif
+		#ifdef HAVE_SRD_WRITE_INLINE
+		if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && user_param->inline_size) {
+			efa_attr.flags |= EFADV_QP_FLAGS_INLINE_WRITE;
+		}
+		#endif
+
 		qp = efadv_create_qp_ex(ctx->context, &attr_ex,
 					&efa_attr, sizeof(efa_attr));
 		#else
@@ -4060,8 +4105,18 @@ int ctx_set_recv_wqes(struct pingpong_context *ctx,struct perftest_parameters *u
 				}
 			}
 
-			ctx->rwr[i * user_param->recv_post_list + j].sg_list = &ctx->recv_sge_list[i * user_param->recv_post_list + j];
-			ctx->rwr[i * user_param->recv_post_list + j].num_sge = MAX_RECV_SGE;
+#ifdef HAVE_NUM_SGE_ZERO
+// Setting num_sge=0 is supported by the vendor and using it for WRITE_IMM verb.
+			if (user_param->verb == WRITE_IMM) {
+				ctx->rwr[i * user_param->recv_post_list + j].sg_list = NULL;
+				ctx->rwr[i * user_param->recv_post_list + j].num_sge = 0;
+			}
+			else 
+#endif
+			{
+				ctx->rwr[i * user_param->recv_post_list + j].sg_list = &ctx->recv_sge_list[i * user_param->recv_post_list + j];
+				ctx->rwr[i * user_param->recv_post_list + j].num_sge = MAX_RECV_SGE;
+			}
 			ctx->rwr[i * user_param->recv_post_list + j].wr_id   = build_wr_id(i * user_param->recv_post_list + j, i);
 
 			if (j == (user_param->recv_post_list - 1))
@@ -6767,11 +6822,70 @@ cleaning:
 /******************************************************************************
 *
 ******************************************************************************/
+static int gid_is_v4mapped(const union ibv_gid *gid)
+{
+	return (gid->raw[10] == 0xff && gid->raw[11] == 0xff &&
+		!gid->raw[0] && !gid->raw[1] && !gid->raw[2] &&
+		!gid->raw[3] && !gid->raw[4] && !gid->raw[5] &&
+		!gid->raw[6] && !gid->raw[7] && !gid->raw[8] &&
+		!gid->raw[9]);
+}
+
+/******************************************************************************
+*
+******************************************************************************/
+static int gid_to_sockaddr(const union ibv_gid *gid, int ai_family,
+			   struct sockaddr **addr, socklen_t *len)
+{
+	if (ai_family == AF_INET && gid_is_v4mapped(gid)) {
+		struct sockaddr_in *s4;
+
+		/* Skip 0.0.0.0 */
+		if (!gid->raw[12] && !gid->raw[13] &&
+		    !gid->raw[14] && !gid->raw[15])
+			return -1;
+
+		s4 = (struct sockaddr_in *)calloc(1, sizeof(*s4));
+		s4->sin_family = AF_INET;
+		memcpy(&s4->sin_addr, &gid->raw[12], 4);
+		*addr = (struct sockaddr *)s4;
+		*len = sizeof(*s4);
+		return 0;
+	}
+
+	if (ai_family == AF_INET6 && !gid_is_v4mapped(gid)) {
+		struct sockaddr_in6 *s6;
+		int j, all_zero = 1;
+
+		for (j = 0; j < 16; j++) {
+			if (gid->raw[j]) { all_zero = 0; break; }
+		}
+		if (all_zero)
+			return -1;
+
+		/* Skip link-local (fe80::/10) — not routable across subnets */
+		if (gid->raw[0] == 0xfe && (gid->raw[1] & 0xc0) == 0x80)
+			return -1;
+
+		s6 = (struct sockaddr_in6 *)calloc(1, sizeof(*s6));
+		s6->sin6_family = AF_INET6;
+		memcpy(&s6->sin6_addr, gid->raw, 16);
+		*addr = (struct sockaddr *)s6;
+		*len = sizeof(*s6);
+		return 0;
+	}
+
+	return -1;
+}
+
+/******************************************************************************
+*
+******************************************************************************/
 int rdma_cm_allocate_nodes(struct pingpong_context *ctx,
-	struct perftest_parameters *user_param, struct rdma_addrinfo *hints)
+	struct perftest_parameters *user_param, struct rdma_addrinfo *hints, bool retry)
 {
 	int rc = SUCCESS, i = 0;
-	char *error_message;
+	char error_message[ERROR_MSG_SIZE] = "";
 
 	if (user_param->connection_type == UD
 		|| user_param->connection_type == RawEth)
@@ -6779,28 +6893,38 @@ int rdma_cm_allocate_nodes(struct pingpong_context *ctx,
 	else
 		hints->ai_port_space = RDMA_PS_TCP;
 
-	ALLOCATE(ctx->cma_master.nodes, struct cma_node, user_param->num_of_qps);
-	if (!ctx->cma_master.nodes) {
-		error_message = "Failed to allocate memory for RDMA CM nodes.";
-		goto error;
+	if(!retry){
+		ALLOCATE(ctx->cma_master.nodes, struct cma_node, user_param->num_of_qps);
+		if (!ctx->cma_master.nodes) {
+			sprintf(error_message, "Failed to allocate memory for RDMA CM nodes.");
+			goto error;
+		}
+
+		memset(ctx->cma_master.nodes, 0,
+			(sizeof *ctx->cma_master.nodes) * user_param->num_of_qps);
 	}
 
-	memset(ctx->cma_master.nodes, 0,
-		(sizeof *ctx->cma_master.nodes) * user_param->num_of_qps);
 
 	for (i = 0; i < user_param->num_of_qps; i++) {
+		if (ctx->cma_master.nodes[i].cma_id) {
+			continue;
+		}
 		ctx->cma_master.nodes[i].id = i;
 		if (user_param->machine == CLIENT) {
 			rc = rdma_create_id(ctx->cma_master.channel,
 				&ctx->cma_master.nodes[i].cma_id, NULL, hints->ai_port_space);
 			if (rc) {
-				error_message = "Failed to create RDMA CM ID.";
+				sprintf(error_message, "Failed to create RDMA CM ID on cm_node %d.", i);
 				goto error;
 			}
 		}
 	}
 
 	if (user_param->has_source_ip) {
+		 if (retry && hints->ai_src_addr) {
+			free(hints->ai_src_addr);
+			hints->ai_src_addr = NULL;
+		}
 		if (AF_INET == user_param->ai_family) {
 			struct sockaddr_in *source_addr;
 			source_addr = calloc(1, sizeof(*source_addr));
@@ -6832,6 +6956,30 @@ int rdma_cm_allocate_nodes(struct pingpong_context *ctx,
 			hints->ai_src_addr = (struct sockaddr *)(source_addr);
 			hints->ai_src_len = sizeof(*source_addr);
 		}
+	} else if (user_param->ib_devname) {
+		/* No --bind_source_ip, but --ib-dev was specified.
+		* rdma_cm ignores --ib-dev when resolving routes, so find an IP
+		* on that device and pass it as the source address to bind the interface. */
+		struct ibv_port_attr port_attr;
+		union ibv_gid gid;
+
+		if (!ibv_query_port(ctx->context, user_param->ib_port,
+				    &port_attr)) {
+			int idx;
+
+			for (idx = 0; idx < port_attr.gid_tbl_len; idx++) {
+				if (ibv_query_gid(ctx->context,
+						  user_param->ib_port,
+						  idx, &gid))
+					continue;
+
+				if (!gid_to_sockaddr(&gid,
+						     user_param->ai_family,
+						     &hints->ai_src_addr,
+						     &hints->ai_src_len))
+					break;
+			}
+		}
 	}
 
 	return rc;
@@ -6840,12 +6988,15 @@ error:
 	while (--i >= 0) {
 		rc = rdma_destroy_id(ctx->cma_master.nodes[i].cma_id);
 		if (rc) {
-			error_message = "Failed to destroy RDMA CM ID.";
+			sprintf(error_message, "Failed to destroy RDMA CM ID for node %d.", i);
 			break;
 		}
 	}
 
-	free(ctx->cma_master.nodes);
+	if (!retry && ctx->cma_master.nodes) {
+		free(ctx->cma_master.nodes);
+		ctx->cma_master.nodes = NULL;
+	}
 	return error_handler(error_message);
 }
 
@@ -6859,8 +7010,11 @@ void rdma_cm_destroy_qps(struct pingpong_context *ctx,
 
 	for (i = 0; i < user_param->num_of_qps; i++) {
 		struct cma_node *cm_node = &ctx->cma_master.nodes[i];
-		if (cm_node->cma_id->qp) {
+		if (cm_node->cma_id && cm_node->cma_id->qp) {
 			rdma_destroy_qp(cm_node->cma_id);
+		}
+		if (ctx->qp && ctx->qp[i]) {
+			ctx->qp[i] = NULL;
 		}
 	}
 }
@@ -6877,24 +7031,42 @@ int rdma_cm_destroy_cma(struct pingpong_context *ctx,
 
 	for (i = 0; i < user_param->num_of_qps; i++) {
 		cm_node = &ctx->cma_master.nodes[i];
-		rc = rdma_destroy_id(cm_node->cma_id);
-		if (rc) {
-			sprintf(error_message,
-				"Failed to destroy RDMA CM ID number %d.", i);
-			goto error;
+		if(cm_node && cm_node->cma_id)
+		{
+			if (cm_node->connected) {
+				continue;
+			}
+			if (ctx->qp && ctx->qp[i]) {
+				if (cm_node->cma_id->qp) {
+					rdma_destroy_qp(cm_node->cma_id);
+				} else {
+					ibv_destroy_qp(ctx->qp[i]);
+				}
+				ctx->qp[i] = NULL;
+			}
+			if (user_param->ah_allocated && ctx->ah && ctx->ah[i]) {
+				ibv_destroy_ah(ctx->ah[i]);
+				ctx->ah[i] = NULL;
+			}
+
+			rc = rdma_destroy_id(cm_node->cma_id);
+			if (rc) {
+				sprintf(error_message,
+					"Failed to destroy RDMA CM ID number %d.", i);
+				return error_handler(error_message);
+			}
+			cm_node->cma_id = NULL;
 		}
 	}
 
-	rdma_destroy_event_channel(ctx->cma_master.channel);
-	if (ctx->cma_master.rai) {
-		rdma_freeaddrinfo(ctx->cma_master.rai);
+	int connected_count = 0;
+	for (i = 0; i < user_param->num_of_qps; i++) {
+		if (ctx->cma_master.nodes[i].connected) {
+			connected_count++;
+		}
 	}
-
-	free(ctx->cma_master.nodes);
+	ctx->cma_master.connects_left = user_param->num_of_qps - connected_count;
 	return rc;
-
-error:
-	return error_handler(error_message);
 }
 
 int error_handler(char *error_message)
