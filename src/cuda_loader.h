@@ -41,6 +41,7 @@ extern CUresult (*p_cuMemFreeHost)(void *);
 extern CUresult (*p_cuMemFree)(CUdeviceptr);
 extern CUresult (*p_cuMemcpy)(CUdeviceptr, CUdeviceptr, size_t);
 extern CUresult (*p_cuMemcpyDtoD)(CUdeviceptr, CUdeviceptr, size_t);
+extern CUresult (*p_cuMemcpyDtoH)(void *, CUdeviceptr, size_t);
 #ifdef HAVE_CUDA_DMABUF
 extern CUresult (*p_cuMemGetHandleForAddressRange)(void *, void *, size_t, CUmemRangeHandleType, unsigned int);
 #endif

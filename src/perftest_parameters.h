@@ -459,7 +459,8 @@ enum memory_type {
 	MEMORY_HL,
 	MEMORY_MLU,
 	MEMORY_OPENCL,
-	MEMORY_DM
+	MEMORY_DM,
+	MEMORY_DMABUF
 };
 
 enum cuda_mem_type {
@@ -469,6 +470,7 @@ enum cuda_mem_type {
 	CUDA_MEM_HOSTREGISTER,
 	CUDA_MEM_MALLOC,
 	CUDA_MEM_BOUNCE,
+	CUDA_MEM_BOUNCE_NO_SWIOTLB,
 	CUDA_MEM_TYPES
 };
 
