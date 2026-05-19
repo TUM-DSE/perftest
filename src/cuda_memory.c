@@ -14,8 +14,6 @@
 
 static int kernel_plugin_initialized = 0;
 static void cuda_validation_destroy(struct memory_ctx *ctx);
-// TEO
-static bool bounce_buffer_active = false;
 
 #define CUCHECK(stmt) \
 	do { \
@@ -219,17 +217,12 @@ int cuda_memory_destroy(struct memory_ctx *ctx) {
 	return SUCCESS;
 }
 
-int cuda_copy_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
+int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 {
-	if(!bounce_buffer_active) {
-		return SUCCESS;
-	}
-
 	struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
 
 	if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_NO_SWIOTLB) {
-		int error = p_cuMemcpyDtoH(cuda_ctx->swiotlb_dmabuf_addr,
-					   (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr, size);
+		int error = p_cuMemcpyDtoH(cuda_ctx->swiotlb_dmabuf_addr, (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr, size);
 		if (error != CUDA_SUCCESS) {
 			fprintf(stderr, "cuda_bounce_no_swiotlb: cuMemcpyDtoH failed: %d\n", error);
 			return FAILURE;
@@ -237,12 +230,14 @@ int cuda_copy_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 		return SUCCESS;
 	}
 
-	CUdeviceptr cpu_side = (CUdeviceptr)cuda_ctx->cpu_bounce_buf_addr;
-	CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-	int error = p_cuMemcpy(cpu_side, gpu_side, size);
-	if (error != CUDA_SUCCESS) {
-		fprintf(stderr, "cuda_bounce: cuMemcpy DtoH failed: %d\n", error);
-		return FAILURE;
+	if(cuda_ctx->mem_type == CUDA_MEM_BOUNCE) {
+    	CUdeviceptr cpu_side = (CUdeviceptr)cuda_ctx->cpu_bounce_buf_addr;
+    	CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
+    	int error = p_cuMemcpy(cpu_side, gpu_side, size);
+    	if (error != CUDA_SUCCESS) {
+    		fprintf(stderr, "cuda_bounce: cuMemcpy DtoH failed: %d\n", error);
+    		return FAILURE;
+    	}
 	}
 
 	return SUCCESS;
@@ -251,7 +246,6 @@ int cuda_copy_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 static int cuda_allocate_bounce_buffer(struct cuda_memory_ctx *cuda_ctx, uint64_t size, int *dmabuf_fd,
 		uint64_t *dmabuf_offset, void **addr, bool *can_init) {
 	printf(" >> Allocating memory for bounce buffer!!!\n");
-	bounce_buffer_active = true;
 	// Align to GPU page size
 	// TEO_TODO: Make sure to only copy `size`, NOT `buf_size`
 	size_t buf_size = (size + ACCEL_PAGE_SIZE - 1) & ~(ACCEL_PAGE_SIZE - 1);
@@ -322,7 +316,6 @@ static int cuda_allocate_bounce_no_swiotlb_buffer(
 		return FAILURE;
 	}
 
-	bounce_buffer_active = true;
 	*dmabuf_fd     = cuda_ctx->swiotlb_dmabuf_fd;
 	*dmabuf_offset = 0;
 	*addr          = cuda_ctx->swiotlb_dmabuf_addr;
@@ -583,11 +576,6 @@ bool cuda_gpu_touch_supported() {
 #endif
 }
 
-// TEO
-bool cuda_bounce_buffer_active() {
-	return bounce_buffer_active;
-}
-
 static int ensure_kernel_plugin_loaded(void)
 {
 	if (kernel_plugin_initialized)
@@ -730,7 +718,7 @@ struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
 	ctx->base.validation_start = cuda_validation_start;
 	ctx->base.validation_stop = cuda_validation_stop;
 	ctx->base.validation_destroy = cuda_validation_destroy;
-	ctx->base.copy_to_bounce_buffer = cuda_copy_to_bounce_buffer;
+	ctx->base.copy_from_gpu_to_bounce_buffer = cuda_copy_from_gpu_to_bounce_buffer;
 	ctx->device_id = params->cuda_device_id;
 	ctx->device_bus_id = params->cuda_device_bus_id;
 	ctx->use_dmabuf = params->use_cuda_dmabuf;
