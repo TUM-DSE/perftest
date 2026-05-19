@@ -48,10 +48,12 @@ struct cuda_memory_ctx {
 	bool use_pcie_mapping;
 	int driver_version;
 	int validation_active; /* 1 if plugin validation is active */
-	// TEO
+	// the pointer to gpu mem. set for all mem types
+	void* gpu_addr;
+	// gpu bounce buffer addresses
 	void* gpu_bounce_buf_addr;
 	void* cpu_bounce_buf_addr;
-	/* CUDA_MEM_BOUNCE_NO_SWIOTLB */
+	// data for the swiotlb dmabuf fd and addr
 	int swiotlb_dmabuf_fd;
 	void *swiotlb_dmabuf_addr;
 };
@@ -299,6 +301,7 @@ static int cuda_allocate_bounce_buffer(struct cuda_memory_ctx *cuda_ctx, uint64_
 	}
 
 	cuda_ctx->gpu_bounce_buf_addr = (void*)d_A;
+	cuda_ctx->gpu_addr = (void*)d_A;
 
 	*dmabuf_fd = 0;
 	*dmabuf_offset = 0;
@@ -340,6 +343,7 @@ static int cuda_allocate_bounce_no_swiotlb_buffer(
 		return FAILURE;
 	}
 	cuda_ctx->gpu_bounce_buf_addr = (void *)d_A;
+	cuda_ctx->gpu_addr = (void *)d_A;
 
 	if (dmabuf_alloc_region(size, &cuda_ctx->swiotlb_dmabuf_fd, &cuda_ctx->swiotlb_dmabuf_addr) != SUCCESS) {
 		p_cuMemFree(d_A);
@@ -386,6 +390,8 @@ static int cuda_allocate_device_memory_buffer(struct cuda_memory_ctx *cuda_ctx, 
 		}
 
 		*addr = (void *)d_A;
+		cuda_ctx->gpu_addr = (void *)d_A;
+
 		*can_init = false;
 
 #ifdef HAVE_CUDA_DMABUF
@@ -459,6 +465,8 @@ int cuda_memory_allocate_buffer(struct memory_ctx *ctx, int alignment, uint64_t 
 			}
 
 			*addr = (void *)d_ptr;
+			cuda_ctx->gpu_addr = (void *)d_ptr;
+
 			*can_init = false;
 			break;
 		case CUDA_MEM_BOUNCE:
@@ -482,6 +490,8 @@ int cuda_memory_allocate_buffer(struct memory_ctx *ctx, int alignment, uint64_t 
 
 			printf("Host allocation selected, calling memalign allocator for %lu bytes with %d page size\n", size, alignment);
 			*addr = memalign(alignment, size);
+			cuda_ctx->gpu_addr = addr;
+
 			if (!*addr) {
 				printf("memalign error=%d\n", errno);
 				return FAILURE;
@@ -567,6 +577,11 @@ int cuda_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd, void *addr, u
 	}
 
 	return SUCCESS;
+}
+
+void *cuda_validation_get_gpu_buffer(struct memory_ctx *ctx) {
+    struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
+    return cuda_ctx->gpu_addr;
 }
 
 void *cuda_memory_copy_host_buffer(void *dest, const void *src, size_t size) {
@@ -745,6 +760,7 @@ struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
 	ctx->base.copy_host_to_buffer = cuda_memory_copy_host_buffer;
 	ctx->base.copy_buffer_to_host = cuda_memory_copy_host_buffer;
 	ctx->base.copy_buffer_to_buffer = cuda_memory_copy_buffer_to_buffer;
+	ctx->base.validation_get_gpu_buffer = cuda_validation_get_gpu_buffer;
 	ctx->base.validation_init = cuda_validation_init;
 	ctx->base.validation_start = cuda_validation_start;
 	ctx->base.validation_stop = cuda_validation_stop;

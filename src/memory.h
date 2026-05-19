@@ -59,8 +59,10 @@ struct memory_ctx {
 	int (*copy_from_gpu_to_bounce_buffer)(struct memory_ctx *ctx, size_t size);
 	int (*copy_from_bounce_buffer_to_gpu)(struct memory_ctx *ctx, size_t size);
 	/* Data validation interface (optional - NULL if not supported by memory type) */
-	int (*validation_init)(struct memory_ctx *ctx,
-		const struct validation_config *cfg);
+	// for cuda_memory validation. In the bounce buffer case ctx->buf[0] points to CPU buffer
+	// -> extra function to get gpu buffer needed
+	void* (*validation_get_gpu_buffer)(struct memory_ctx *ctx);
+	int (*validation_init)(struct memory_ctx *ctx,const struct validation_config *cfg);
 	int (*validation_start)(struct memory_ctx *ctx);
 	int (*validation_stop)(struct memory_ctx *ctx, struct data_validation_result *result);
 	void (*validation_destroy)(struct memory_ctx *ctx);

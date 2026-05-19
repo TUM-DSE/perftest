@@ -7136,8 +7136,13 @@ int data_validation_init(struct pingpong_context *ctx,
 		markers_offset = ctx->tail_markers_offset;    /* NIC-written atomics */
 
 	{
+        void *vbuf = ctx->memory->validation_get_gpu_buffer ?
+            ctx->memory->validation_get_gpu_buffer(ctx->memory) :
+            ctx->buf[0];
+
+
 		struct validation_config vcfg = {
-			.buffer_base = ctx->buf[0],
+			.buffer_base = vbuf,
 			.markers_offset = markers_offset,
 			.recv_slots_offset = ctx->recv_slots_offset,
 			.payload_size = ctx->payload_size,
