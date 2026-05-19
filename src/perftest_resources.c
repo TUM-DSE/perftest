@@ -4455,6 +4455,17 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				if (user_param->test_type == DURATION && user_param->state == END_STATE)
 					break;
 
+
+			// TEO
+			if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+				if (err != SUCCESS) {
+					fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
+					return_value = FAILURE;
+					goto cleaning;
+				}
+			}
+
 			err = post_send_method(ctx, index, user_param);
 			if (err) {
 				fprintf(stderr,"Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n",index,ctx->scnt[index],err,user_param->tx_depth	);
@@ -6137,6 +6148,14 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 		if (user_param->test_type == ITERATIONS)
 			user_param->tposted[scnt++] = get_cycles();
 
+		// TEO
+		if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+			err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+			if (err != SUCCESS) {
+				fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
+				return 1;
+			}
+		}
 		err = post_send_method(ctx, 0, user_param);
 
 		if (err) {
