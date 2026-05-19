@@ -21,6 +21,7 @@ CUresult (*p_cuMemFreeHost)(void *) = NULL;
 CUresult (*p_cuMemFree)(CUdeviceptr) = NULL;
 CUresult (*p_cuMemcpy)(CUdeviceptr, CUdeviceptr, size_t) = NULL;
 CUresult (*p_cuMemcpyDtoD)(CUdeviceptr, CUdeviceptr, size_t) = NULL;
+CUresult (*p_cuMemcpyDtoH)(void *, CUdeviceptr, size_t) = NULL;
 #ifdef HAVE_CUDA_DMABUF
 CUresult (*p_cuMemGetHandleForAddressRange)(void *, void *, size_t, CUmemRangeHandleType, unsigned int) = NULL;
 #endif
@@ -80,6 +81,7 @@ int load_cuda_library(void) {
         { (void**)&p_cuMemFree,                   "cuMemFree",                    CUDA_VER_3_2  },
         { (void**)&p_cuMemcpy,                    "cuMemcpy",                     CUDA_VER_11_3 },
         { (void**)&p_cuMemcpyDtoD,                "cuMemcpyDtoD",                 CUDA_VER_3_2  },
+        { (void**)&p_cuMemcpyDtoH,                "cuMemcpyDtoH",                 CUDA_VER_3_2  },
 #ifdef HAVE_CUDA_DMABUF
         { (void**)&p_cuMemGetHandleForAddressRange, "cuMemGetHandleForAddressRange", CUDA_VER_11_7 },
 #endif

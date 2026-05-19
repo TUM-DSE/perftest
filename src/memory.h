@@ -56,7 +56,8 @@ struct memory_ctx {
 	void *(*copy_buffer_to_host)(void *dest, const void *src, size_t size);
 	void *(*copy_buffer_to_buffer)(void *dest, const void *src, size_t size);
 	// TEO_TODO: Add a copy_to_bounce_buffer function to be called in the iter_bw and iter_lat functions
-	int (*copy_to_bounce_buffer)(struct memory_ctx *ctx, size_t size);
+	int (*copy_from_gpu_to_bounce_buffer)(struct memory_ctx *ctx, size_t size);
+	int (*copy_from_bounce_buffer_to_gpu)(struct memory_ctx *ctx, size_t size);
 	/* Data validation interface (optional - NULL if not supported by memory type) */
 	int (*validation_init)(struct memory_ctx *ctx,
 		const struct validation_config *cfg);

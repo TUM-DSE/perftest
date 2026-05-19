@@ -4457,8 +4457,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 
 			// TEO
-			if(ctx->memory->copy_to_bounce_buffer) {
-				err = ctx->memory->copy_to_bounce_buffer(ctx->memory, user_param->size);
+			if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 				if (err != SUCCESS) {
 					fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
 					return_value = FAILURE;
@@ -6149,8 +6149,8 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 			user_param->tposted[scnt++] = get_cycles();
 
 		// TEO
-		if(ctx->memory->copy_to_bounce_buffer) {
-			err = ctx->memory->copy_to_bounce_buffer(ctx->memory, user_param->size);
+		if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+			err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 			if (err != SUCCESS) {
 				fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
 				return 1;
