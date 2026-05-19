@@ -766,6 +766,7 @@ struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
 	ctx->base.validation_stop = cuda_validation_stop;
 	ctx->base.validation_destroy = cuda_validation_destroy;
 	ctx->base.copy_from_gpu_to_bounce_buffer = cuda_copy_from_gpu_to_bounce_buffer;
+	ctx->base.copy_from_bounce_buffer_to_gpu = cuda_copy_from_bounce_buffer_to_gpu;
 	ctx->device_id = params->cuda_device_id;
 	ctx->device_bus_id = params->cuda_device_bus_id;
 	ctx->use_dmabuf = params->use_cuda_dmabuf;
