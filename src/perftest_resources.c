@@ -1,3 +1,4 @@
+#include "src/perftest_parameters.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -4111,7 +4112,7 @@ int ctx_set_recv_wqes(struct pingpong_context *ctx,struct perftest_parameters *u
 				ctx->rwr[i * user_param->recv_post_list + j].sg_list = NULL;
 				ctx->rwr[i * user_param->recv_post_list + j].num_sge = 0;
 			}
-			else 
+			else
 #endif
 			{
 				ctx->rwr[i * user_param->recv_post_list + j].sg_list = &ctx->recv_sge_list[i * user_param->recv_post_list + j];
@@ -4457,10 +4458,10 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 
 			// TEO
-			if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+			if(user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 				if (err != SUCCESS) {
-					fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
+					fprintf(stderr,"Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n",err,user_param->size);
 					return_value = FAILURE;
 					goto cleaning;
 				}
@@ -4471,6 +4472,15 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				fprintf(stderr,"Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n",index,ctx->scnt[index],err,user_param->tx_depth	);
 				return_value = FAILURE;
 				goto cleaning;
+			}
+
+			if(user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+			    err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+				if (err != SUCCESS) {
+    				fprintf(stderr,"Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n",err,user_param->size);
+    				return_value = FAILURE;
+    				goto cleaning;
+				}
 			}
 
 			/* if we have more than single flow and the burst iter is the last one */
@@ -6149,18 +6159,26 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 			user_param->tposted[scnt++] = get_cycles();
 
 		// TEO
-		if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+		if(user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 			err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 			if (err != SUCCESS) {
-				fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
+				fprintf(stderr,"Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n",err,user_param->size);
 				return 1;
 			}
 		}
-		err = post_send_method(ctx, 0, user_param);
 
+		err = post_send_method(ctx, 0, user_param);
 		if (err) {
 			fprintf(stderr,"Couldn't post send: scnt=%lu\n",scnt);
 			return 1;
+		}
+
+		if(user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+			err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+			if (err != SUCCESS) {
+				fprintf(stderr,"Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n",err,user_param->size);
+				return 1;
+			}
 		}
 
 		if (user_param->test_type == DURATION && user_param->state == END_STATE)

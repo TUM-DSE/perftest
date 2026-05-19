@@ -1,4 +1,5 @@
 #include "cuda_loader.h"
+#include <cuda.h>
 #include <dlfcn.h>
 #include <stdio.h>
 
@@ -22,6 +23,7 @@ CUresult (*p_cuMemFree)(CUdeviceptr) = NULL;
 CUresult (*p_cuMemcpy)(CUdeviceptr, CUdeviceptr, size_t) = NULL;
 CUresult (*p_cuMemcpyDtoD)(CUdeviceptr, CUdeviceptr, size_t) = NULL;
 CUresult (*p_cuMemcpyDtoH)(void *, CUdeviceptr, size_t) = NULL;
+CUresult (*p_cuMemcpyHtoD)(CUdeviceptr, void *, size_t) = NULL;
 #ifdef HAVE_CUDA_DMABUF
 CUresult (*p_cuMemGetHandleForAddressRange)(void *, void *, size_t, CUmemRangeHandleType, unsigned int) = NULL;
 #endif

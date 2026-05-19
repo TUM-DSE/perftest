@@ -10,6 +10,7 @@
 #include "perftest_parameters.h"
 #include "cuda_loader.h"
 #include "dmabuf_memory.h"
+#include "src/memory.h"
 #include "validation_common.h"
 
 static int kernel_plugin_initialized = 0;
@@ -222,7 +223,9 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 	struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
 
 	if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_NO_SWIOTLB) {
-		int error = p_cuMemcpyDtoH(cuda_ctx->swiotlb_dmabuf_addr, (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr, size);
+	    void* cpu_side = cuda_ctx->swiotlb_dmabuf_addr;
+		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
+		int error = p_cuMemcpyDtoH(cpu_side, gpu_side, size);
 		if (error != CUDA_SUCCESS) {
 			fprintf(stderr, "cuda_bounce_no_swiotlb: cuMemcpyDtoH failed: %d\n", error);
 			return FAILURE;
@@ -238,6 +241,34 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
     		fprintf(stderr, "cuda_bounce: cuMemcpy DtoH failed: %d\n", error);
     		return FAILURE;
     	}
+	}
+
+	return SUCCESS;
+}
+
+int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx* ctx, size_t size)
+{
+    struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
+
+    if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_NO_SWIOTLB) {
+	    void* cpu_side = cuda_ctx->swiotlb_dmabuf_addr;
+		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
+		int error = p_cuMemcpyHtoD(gpu_side, cpu_side, size);
+		if (error != CUDA_SUCCESS) {
+			fprintf(stderr, "cuda_bounce_no_swiotlb: cuMemcpyDtoH failed: %d\n", error);
+			return FAILURE;
+		}
+		return SUCCESS;
+	}
+
+	if(cuda_ctx->mem_type == CUDA_MEM_BOUNCE) {
+       	CUdeviceptr cpu_side = (CUdeviceptr)cuda_ctx->cpu_bounce_buf_addr;
+       	CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
+       	int error = p_cuMemcpy(gpu_side, cpu_side, size);
+       	if (error != CUDA_SUCCESS) {
+       		fprintf(stderr, "cuda_bounce: cuMemcpy DtoH failed: %d\n", error);
+       		return FAILURE;
+       	}
 	}
 
 	return SUCCESS;
