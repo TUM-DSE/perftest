@@ -3,6 +3,7 @@
  * Copyright 2023 Amazon.com, Inc. or its affiliates. All rights reserved.
  */
 
+#include <cuda.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -250,12 +251,15 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 
 int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx* ctx, size_t size)
 {
+    fprintf(stderr, "in copy from bb to gpu\n");
     struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
 
     if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_NO_SWIOTLB) {
 	    void* cpu_side = cuda_ctx->swiotlb_dmabuf_addr;
 		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
+		fprintf(stderr, "[dv_debug] copying from bb: %p to gpu: %llu\n", cpu_side, gpu_side);
 		int error = p_cuMemcpyHtoD(gpu_side, cpu_side, size);
+		fprintf(stderr, "[dv_debug] copied with err: %i\n", error);
 		if (error != CUDA_SUCCESS) {
 			fprintf(stderr, "cuda_bounce_no_swiotlb: cuMemcpyDtoH failed: %d\n", error);
 			return FAILURE;
