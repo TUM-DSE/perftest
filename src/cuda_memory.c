@@ -10,7 +10,7 @@
 #include "cuda_memory.h"
 #include "perftest_parameters.h"
 #include "cuda_loader.h"
-#include "dmabuf_memory.h"
+#include "dm_coh_memory.h"
 #include "src/memory.h"
 #include "validation_common.h"
 
@@ -349,7 +349,7 @@ static int cuda_allocate_bounce_no_swiotlb_buffer(
 	cuda_ctx->gpu_bounce_buf_addr = (void *)d_A;
 	cuda_ctx->gpu_addr = (void *)d_A;
 
-	if (dmabuf_alloc_region(size, &cuda_ctx->swiotlb_dmabuf_fd, &cuda_ctx->swiotlb_dmabuf_addr) != SUCCESS) {
+	if (dmabuf_coh_alloc_region(size, &cuda_ctx->swiotlb_dmabuf_fd, &cuda_ctx->swiotlb_dmabuf_addr) != SUCCESS) {
 		p_cuMemFree(d_A);
 		cuda_ctx->gpu_bounce_buf_addr = NULL;
 		return FAILURE;
@@ -574,7 +574,7 @@ int cuda_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd, void *addr, u
 				p_cuMemFree((CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr);
 				cuda_ctx->gpu_bounce_buf_addr = NULL;
 			}
-			dmabuf_free_region(cuda_ctx->swiotlb_dmabuf_fd, addr, size);
+			dmabuf_coh_free_region(cuda_ctx->swiotlb_dmabuf_fd, addr, size);
 			cuda_ctx->swiotlb_dmabuf_fd = 0;
 			cuda_ctx->swiotlb_dmabuf_addr = NULL;
 			break;

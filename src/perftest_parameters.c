@@ -22,7 +22,7 @@
 #include "mlu_memory.h"
 #include "opencl_memory.h"
 #include "dm_memory.h"
-#include "dmabuf_memory.h"
+#include "dm_coh_memory.h"
 #include<math.h>
 #ifdef HAVE_RO
 #include <stdbool.h>
@@ -3492,7 +3492,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				}
 				if (use_dmabuf_flag) {
 					user_param->memory_type = MEMORY_DMABUF;
-					user_param->memory_create = dmabuf_memory_create;
+					user_param->memory_create = dmabuf_coh_memory_create;
 					use_dmabuf_flag = 0;
 				}
 				if (use_data_direct_flag) {
