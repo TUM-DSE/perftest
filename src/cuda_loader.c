@@ -84,6 +84,7 @@ int load_cuda_library(void) {
         { (void**)&p_cuMemcpy,                    "cuMemcpy",                     CUDA_VER_11_3 },
         { (void**)&p_cuMemcpyDtoD,                "cuMemcpyDtoD",                 CUDA_VER_3_2  },
         { (void**)&p_cuMemcpyDtoH,                "cuMemcpyDtoH",                 CUDA_VER_3_2  },
+        { (void**)&p_cuMemcpyHtoD,                "cuMemcpyHtoD",                 CUDA_VER_3_2  },
 #ifdef HAVE_CUDA_DMABUF
         { (void**)&p_cuMemGetHandleForAddressRange, "cuMemGetHandleForAddressRange", CUDA_VER_11_7 },
 #endif
