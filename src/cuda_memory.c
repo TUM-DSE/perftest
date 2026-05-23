@@ -11,7 +11,6 @@
 #include "perftest_parameters.h"
 #include "cuda_loader.h"
 #include "dm_coh_memory.h"
-#include "cvm_shm_memory.h"
 #include "src/memory.h"
 #include "validation_common.h"
 
@@ -34,7 +33,6 @@ static const char *cuda_mem_type_str[] = {
 	"CUDA_MEM_MALLOC",
 	"CUDA_MEM_BOUNCE",
 	"CUDA_MEM_BOUNCE_DMA_COH",
-	"CUDA_MEM_BOUNCE_CVM_SHM",
 	"CUDA_MEM_TYPES"
 };
 
@@ -59,9 +57,6 @@ struct cuda_memory_ctx {
 	// CPU-side buffer for CUDA_MEM_BOUNCE_DMA_COH (dma_heap_coh DMA-BUF)
 	int swiotlb_dmabuf_fd;
 	void *swiotlb_dmabuf_addr;
-	// CPU-side buffer for CUDA_MEM_BOUNCE_CVM_SHM (/dev/cvm_shm mmap)
-	int cvm_shm_fd;
-	void *cvm_shm_addr;
 };
 
 static int init_gpu(struct cuda_memory_ctx *ctx)
@@ -241,17 +236,6 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 		return SUCCESS;
 	}
 
-	if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_CVM_SHM) {
-		void *cpu_side = cuda_ctx->cvm_shm_addr;
-		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-		int error = p_cuMemcpyDtoH(cpu_side, gpu_side, size);
-		if (error != CUDA_SUCCESS) {
-			fprintf(stderr, "cuda_bounce_cvm_shm: cuMemcpyDtoH failed: %d\n", error);
-			return FAILURE;
-		}
-		return SUCCESS;
-	}
-
 	if(cuda_ctx->mem_type == CUDA_MEM_BOUNCE) {
     	CUdeviceptr cpu_side = (CUdeviceptr)cuda_ctx->cpu_bounce_buf_addr;
     	CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
@@ -265,8 +249,6 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 	return SUCCESS;
 }
 
-int has_success = 0;
-
 int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx* ctx, size_t size)
 {
     struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
@@ -274,30 +256,9 @@ int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx* ctx, size_t size)
     if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_DMA_COH) {
 		void *cpu_side = cuda_ctx->swiotlb_dmabuf_addr;
 		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-		if(!has_success) {
-    		fprintf(stderr, "[dv_debug] copying from bb: %p to gpu: %llu\n", cpu_side, gpu_side);
-		}
 		int error = p_cuMemcpyHtoD(gpu_side, cpu_side, size);
-		if(!has_success) {
-    		fprintf(stderr, "[dv_debug] copied with err: %i\n", error);
-		}
 		if (error != CUDA_SUCCESS) {
 			fprintf(stderr, "cuda_bounce_dma_coh: cuMemcpyHtoD failed: %d\n", error);
-			return FAILURE;
-		} else {
-    		has_success = 1;
-		}
-		return SUCCESS;
-	}
-
-	if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_CVM_SHM) {
-		void *cpu_side = cuda_ctx->cvm_shm_addr;
-		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-		fprintf(stderr, "[dv_debug] cvm_shm copying from bb: %p to gpu: %llu\n", cpu_side, gpu_side);
-		int error = p_cuMemcpyHtoD(gpu_side, cpu_side, size);
-		fprintf(stderr, "[dv_debug] cvm_shm copied with err: %i\n", error);
-		if (error != CUDA_SUCCESS) {
-			fprintf(stderr, "cuda_bounce_cvm_shm: cuMemcpyHtoD failed: %d\n", error);
 			return FAILURE;
 		}
 		return SUCCESS;
@@ -402,46 +363,6 @@ static int cuda_allocate_bounce_dma_coh_buffer(
 	return SUCCESS;
 }
 
-static int cuda_allocate_bounce_cvm_shm_buffer(
-	struct cuda_memory_ctx *cuda_ctx, uint64_t size,
-	int *dmabuf_fd, uint64_t *dmabuf_offset, void **addr, bool *can_init
-) {
-	size_t gpu_buf_size = (size + ACCEL_PAGE_SIZE - 1) & ~(ACCEL_PAGE_SIZE - 1);
-	CUdeviceptr d_A;
-	int error;
-
-	int cuda_device_integrated;
-	p_cuDeviceGetAttribute(&cuda_device_integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, cuda_ctx->cuDevice);
-	if (cuda_device_integrated) {
-		fprintf(stderr, "cuda_bounce_cvm_shm: integrated GPUs are not supported\n");
-		return FAILURE;
-	}
-
-	error = p_cuMemAlloc(&d_A, gpu_buf_size);
-	if (error != CUDA_SUCCESS) {
-		fprintf(stderr, "cuda_bounce_cvm_shm: cuMemAlloc failed: %d\n", error);
-		return FAILURE;
-	}
-	cuda_ctx->gpu_bounce_buf_addr = (void *)d_A;
-	cuda_ctx->gpu_addr = (void *)d_A;
-
-	if (cvm_shm_alloc_region(size, &cuda_ctx->cvm_shm_fd, &cuda_ctx->cvm_shm_addr) != SUCCESS) {
-		p_cuMemFree(d_A);
-		cuda_ctx->gpu_bounce_buf_addr = NULL;
-		return FAILURE;
-	}
-
-	*dmabuf_fd     = 0;
-	*dmabuf_offset = 0;
-	*addr          = cuda_ctx->cvm_shm_addr;
-	*can_init      = true;
-
-	printf("cuda_bounce_cvm_shm: gpu_buf=%#llx cvm_shm_addr=%p cvm_shm_fd=%d size=%lu\n",
-	       (unsigned long long)d_A, cuda_ctx->cvm_shm_addr,
-	       cuda_ctx->cvm_shm_fd, size);
-	return SUCCESS;
-}
-
 static int cuda_allocate_device_memory_buffer(struct cuda_memory_ctx *cuda_ctx, uint64_t size, int *dmabuf_fd,
 		uint64_t *dmabuf_offset, void **addr, bool *can_init) {
 	int error;
@@ -530,8 +451,6 @@ int cuda_memory_allocate_buffer(struct memory_ctx *ctx, int alignment, uint64_t 
 
 	struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
 
-	printf("[dv_debug] allocate buffer with size %lu \n", size);
-
 	switch (cuda_ctx->mem_type) {
 		case CUDA_MEM_DEVICE:
 			error = cuda_allocate_device_memory_buffer(cuda_ctx, size, dmabuf_fd,
@@ -565,14 +484,6 @@ int cuda_memory_allocate_buffer(struct memory_ctx *ctx, int alignment, uint64_t 
 				return FAILURE;
 			}
 			break;
-		case CUDA_MEM_BOUNCE_CVM_SHM:
-			error = cuda_allocate_bounce_cvm_shm_buffer(cuda_ctx, size, dmabuf_fd, dmabuf_offset, addr, can_init);
-			if (error != SUCCESS) {
-				printf("Failed to allocate cvm_shm bounce buffer: error=%d\n", error);
-				return FAILURE;
-			}
-			break;
-
 		case CUDA_MEM_MALLOC:
 			*can_init = false;
 			/* Fall through */
@@ -662,15 +573,6 @@ int cuda_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd, void *addr, u
 			dmabuf_coh_free_region(cuda_ctx->swiotlb_dmabuf_fd, addr, size);
 			cuda_ctx->swiotlb_dmabuf_fd = 0;
 			cuda_ctx->swiotlb_dmabuf_addr = NULL;
-			break;
-		case CUDA_MEM_BOUNCE_CVM_SHM:
-			if (cuda_ctx->gpu_bounce_buf_addr) {
-				p_cuMemFree((CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr);
-				cuda_ctx->gpu_bounce_buf_addr = NULL;
-			}
-			cvm_shm_free_region(cuda_ctx->cvm_shm_fd, cuda_ctx->cvm_shm_addr, size);
-			cuda_ctx->cvm_shm_fd = 0;
-			cuda_ctx->cvm_shm_addr = NULL;
 			break;
 	}
 

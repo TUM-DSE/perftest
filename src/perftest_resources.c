@@ -68,9 +68,7 @@ static __always_inline int poll_cq_adaptive(
 	struct dyn_poll_state *state,
 	int *dynamic_enabled)
 {
-    printf("[dv_debug] ibv_poll_cq \n");
 	int ne = ibv_poll_cq(cq, state->curr_size, wc);
-	printf("[dv_debug] ibv_poll_cq_completions received %i completions\n", ne);
 
 	if (ne == state->curr_size && state->curr_size < config->max) {
 		state->curr_size = (uint16_t)MIN((state->curr_size + ne) / 2, config->max);
@@ -4719,19 +4717,8 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 
 	gap_deadline = get_cycles();
 	atomic_base_addr = ctx->wr[num_of_qps].wr.atomic.remote_addr;
-	fprintf(stderr, "[dv_debug] atomic_base_addr=%#llx tot_iters=%lu\n",
-		(unsigned long long)atomic_base_addr, (unsigned long)tot_iters);
-
-	uint64_t dv_debug_last_totscnt = 0;
-	uint64_t dv_debug_iters = 0;
 	while (totscnt < tot_iters || totccnt < tot_iters ||
 		(user_param->test_type == DURATION && user_param->state != END_STATE)) {
-
-		dv_debug_iters++;
-		if (dv_debug_iters % 10000 == 0 || dv_debug_iters == 0)
-			fprintf(stderr, "[dv_debug] outer_iters=%lu totscnt=%lu totccnt=%lu ccnt[0]=%lu ne=%d\n",
-				(unsigned long)dv_debug_iters, (unsigned long)totscnt,
-				(unsigned long)totccnt, (unsigned long)ctx->ccnt[0], ne);
 
 		for (index = 0; index < num_of_qps; index++) {
 			if (user_param->rate_limit_type == SW_RATE_LIMIT && is_sending_burst == 0) {
@@ -4759,7 +4746,6 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 				}
 				if (user_param->post_list == 1 && (ctx->scnt[index] % user_param->cq_mod == 0 && user_param->cq_mod > 1)
 					&& !(ctx->scnt[index] == (user_param->iters - 1) && user_param->test_type == ITERATIONS)) {
-					printf("[dv_debug] ibv send signaled\n");
 					ctx->wr[index].send_flags &= ~IBV_SEND_SIGNALED;
 				}
 
@@ -4837,16 +4823,12 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 				}
 			}
 
-			printf("[dv_debug] sent %lu messages, polling for completions \n", totscnt);
-
 			ne = poll_completions(
 				ctx->send_cq,
 				wc,
 				dyn_ctx,
 				totccnt,
 				&user_param->dynamic_cqe_poll);
-
-			printf("[dv_debug] received %i completions \n", ne);
 
 			if (ne > 0) {
 				for (i = 0; i < ne; i++) {
@@ -4885,9 +4867,7 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 			}
 
 			if (ne > 0 && user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
-			    printf("[dv_debug] copy from bb to gpu \n");
 				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, ctx->buff_size);
-				printf("[dv_debug] copied from bb to gpu, err: %i", err);
 				if (err != SUCCESS) {
 					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu) in dv path\n");
 					return_value = FAILURE;

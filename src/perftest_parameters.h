@@ -471,7 +471,6 @@ enum cuda_mem_type {
 	CUDA_MEM_MALLOC,
 	CUDA_MEM_BOUNCE,
 	CUDA_MEM_BOUNCE_DMA_COH,  /* CPU side: dma_heap_coh DMA-BUF (/dev/dma_heap/coh) */
-	CUDA_MEM_BOUNCE_CVM_SHM,  /* CPU side: cvm_shm decrypted pages (/dev/cvm_shm) */
 	CUDA_MEM_TYPES
 };
 
