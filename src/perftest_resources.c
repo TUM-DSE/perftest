@@ -4476,14 +4476,14 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				goto cleaning;
 			}
 
-			if(user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+			/*if(user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
 			    err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
 				if (err != SUCCESS) {
     				fprintf(stderr,"Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n",err,user_param->size);
     				return_value = FAILURE;
     				goto cleaning;
 				}
-			}
+			}*/
 
 			/* if we have more than single flow and the burst iter is the last one */
 			if (user_param->flows != DEF_FLOWS) {
@@ -4583,6 +4583,16 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 						return_value = FAILURE;
 						goto cleaning;
 					}
+
+
+    				if (ne > 0 && user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+    					err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, ctx->buff_size);
+    					if (err != SUCCESS) {
+    						fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu) in dv path\n");
+    						return_value = FAILURE;
+    						goto cleaning;
+    					}
+    				}
 
 		}
 	}
