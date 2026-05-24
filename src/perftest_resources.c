@@ -1988,6 +1988,11 @@ static int initialize_buffer_content(struct pingpong_context *ctx,
 				     struct perftest_parameters *user_param,
 				     int qp_index, bool can_init_mem)
 {
+	void *fill_buf = (ctx->memory && ctx->memory->get_fill_buffer)
+	                 ? ctx->memory->get_fill_buffer(ctx->memory)
+	                 : ctx->buf[qp_index];
+	bool fill_is_device = fill_buf && (fill_buf != ctx->buf[qp_index]);
+
 	/* Data validation: fill patterns on host, then copy to device */
 	if (user_param->data_validation) {
 		uint64_t payload_size = ctx->size;
@@ -2025,11 +2030,11 @@ static int initialize_buffer_content(struct pingpong_context *ctx,
 		}
 
 		if (ctx->memory && ctx->memory->copy_host_to_buffer) {
-			ctx->memory->copy_host_to_buffer(ctx->buf[qp_index], host_buf, ctx->buff_size);
+			ctx->memory->copy_host_to_buffer(fill_buf, host_buf, ctx->buff_size);
 			if (user_param->data_validation_debug)
 				printf("Data validation: Copied %lu bytes to device memory\n", ctx->buff_size);
 		} else {
-			memcpy(ctx->buf[qp_index], host_buf, ctx->buff_size);
+			memcpy(fill_buf, host_buf, ctx->buff_size);
 		}
 
 		free(host_buf);
@@ -2040,18 +2045,41 @@ static int initialize_buffer_content(struct pingpong_context *ctx,
 		return 0;
 
 	uint32_t rng_state = init_perftest_rand_state();
-	if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && user_param->tst == LAT) {
-		memset(ctx->buf[qp_index], 0, ctx->buff_size);
-	} else {
-		uint64_t i;
-		if (user_param->has_payload_modification) {
-			for (i = 0; i < ctx->buff_size; i++) {
-				((char*)ctx->buf[qp_index])[i] = user_param->payload_content[i % user_param->payload_length];
-			}
+
+	if (fill_is_device) {
+		char *host_buf = (char *)malloc(ctx->buff_size);
+		if (!host_buf) {
+			fprintf(stderr, "Failed to allocate host buffer for bounce buffer init\n");
+			return -1;
+		}
+
+		if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && user_param->tst == LAT) {
+			memset(host_buf, 0, ctx->buff_size);
+		} else if (user_param->has_payload_modification) {
+			uint64_t i;
+			for (i = 0; i < ctx->buff_size; i++)
+				host_buf[i] = user_param->payload_content[i % user_param->payload_length];
 		} else {
-			uint32_t *buf_ptr = (uint32_t*)ctx->buf[qp_index];
-			for (i = 0; i < ctx->buff_size/4; i++) {
+			uint32_t *buf_ptr = (uint32_t *)host_buf;
+			uint64_t i;
+			for (i = 0; i < ctx->buff_size / 4; i++)
 				buf_ptr[i] = perftest_rand(&rng_state);
+		}
+
+		ctx->memory->copy_host_to_buffer(fill_buf, host_buf, ctx->buff_size);
+		free(host_buf);
+	} else {
+		if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && user_param->tst == LAT) {
+			memset(fill_buf, 0, ctx->buff_size);
+		} else {
+			uint64_t i;
+			if (user_param->has_payload_modification) {
+				for (i = 0; i < ctx->buff_size; i++)
+					((char*)fill_buf)[i] = user_param->payload_content[i % user_param->payload_length];
+			} else {
+				uint32_t *buf_ptr = (uint32_t *)fill_buf;
+				for (i = 0; i < ctx->buff_size / 4; i++)
+					buf_ptr[i] = perftest_rand(&rng_state);
 			}
 		}
 	}

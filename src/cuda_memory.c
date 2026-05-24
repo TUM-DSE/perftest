@@ -584,6 +584,12 @@ void *cuda_validation_get_gpu_buffer(struct memory_ctx *ctx) {
     return cuda_ctx->gpu_addr;
 }
 
+static void *cuda_get_fill_buffer(struct memory_ctx *ctx)
+{
+	struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
+	return cuda_ctx->gpu_bounce_buf_addr;
+}
+
 void *cuda_memory_copy_host_buffer(void *dest, const void *src, size_t size) {
 	p_cuMemcpy((CUdeviceptr)dest, (CUdeviceptr)src, size);
 	return dest;
@@ -767,6 +773,9 @@ struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
 	ctx->base.validation_destroy = cuda_validation_destroy;
 	ctx->base.copy_from_gpu_to_bounce_buffer = cuda_copy_from_gpu_to_bounce_buffer;
 	ctx->base.copy_from_bounce_buffer_to_gpu = cuda_copy_from_bounce_buffer_to_gpu;
+	ctx->base.get_fill_buffer = (params->cuda_mem_type == CUDA_MEM_BOUNCE_DMA_COH ||
+	                              params->cuda_mem_type == CUDA_MEM_BOUNCE)
+	                             ? cuda_get_fill_buffer : NULL;
 	ctx->device_id = params->cuda_device_id;
 	ctx->device_bus_id = params->cuda_device_bus_id;
 	ctx->use_dmabuf = params->use_cuda_dmabuf;
