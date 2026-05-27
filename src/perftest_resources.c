@@ -4485,11 +4485,10 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					break;
 
 
-			// TEO
-			if(user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
+			if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 				if (err != SUCCESS) {
-					fprintf(stderr,"Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n",err,user_param->size);
+					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 					return_value = FAILURE;
 					goto cleaning;
 				}
@@ -4497,9 +4496,18 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 			err = post_send_method(ctx, index, user_param);
 			if (err) {
-				fprintf(stderr,"Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n",index,ctx->scnt[index],err,user_param->tx_depth	);
+				fprintf(stderr, "Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n", index, ctx->scnt[index], err, user_param->tx_depth);
 				return_value = FAILURE;
 				goto cleaning;
+			}
+
+			if (user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+				if (err != SUCCESS) {
+					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+					return_value = FAILURE;
+					goto cleaning;
+				}
 			}
 
 			/* if we have more than single flow and the burst iter is the last one */
@@ -4600,17 +4608,6 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 						return_value = FAILURE;
 						goto cleaning;
 					}
-
-
-    				if (ne > 0 && user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
-    					err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, ctx->buff_size);
-    					if (err != SUCCESS) {
-    						fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu) in dv path\n");
-    						return_value = FAILURE;
-    						goto cleaning;
-    					}
-    				}
-
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)
@@ -6211,19 +6208,26 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 		if (user_param->test_type == ITERATIONS)
 			user_param->tposted[scnt++] = get_cycles();
 
-		// TEO
-		if(user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
+		if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 			err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 			if (err != SUCCESS) {
-				fprintf(stderr,"Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n",err,user_param->size);
+				fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 				return 1;
 			}
 		}
 
 		err = post_send_method(ctx, 0, user_param);
 		if (err) {
-			fprintf(stderr,"Couldn't post send: scnt=%lu\n",scnt);
+			fprintf(stderr, "Couldn't post send: scnt=%lu\n", scnt);
 			return 1;
+		}
+
+		if (user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+			err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+			if (err != SUCCESS) {
+				fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+				return 1;
+			}
 		}
 
 		if (user_param->test_type == DURATION && user_param->state == END_STATE)
@@ -6253,14 +6257,6 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 			}
 
 		} while (!user_param->use_event && ne == 0);
-
-		if (ne > 0 && user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
-			err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
-			if (err != SUCCESS) {
-				fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
-				return 1;
-			}
-		}
 	}
 
 	return 0;
