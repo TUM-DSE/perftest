@@ -11,56 +11,56 @@
 #include <sys/ioctl.h>
 #include <linux/types.h>
 
-#include "dmabuf_memory.h"
+#include "dm_coh_memory.h"
 #include "perftest_parameters.h"
 
 
-#define SB_DEV "/dev/swiotlb_bypass"
+#define DC_DEV "/dev/dma_heap/coh"
 
-struct sb_alloc_data {
+struct dc_alloc_data {
 	__u64 len;
 	__u32 fd;
 	__u32 fd_flags;
 	__u64 reserved;
 };
 
-#define SB_IOC_MAGIC 'S'
-#define SB_IOC_ALLOC _IOWR(SB_IOC_MAGIC, 0, struct sb_alloc_data)
+#define DC_IOC_MAGIC 'S'
+#define DC_IOC_ALLOC _IOWR(DC_IOC_MAGIC, 0, struct dc_alloc_data)
 
-struct dmabuf_memory_ctx {
+struct dmabuf_coh_memory_ctx {
 	struct memory_ctx base;
 	uint64_t alloc_size;
 };
 
-static int dmabuf_memory_init(struct memory_ctx *ctx)
+static int dmabuf_coh_memory_init(struct memory_ctx *ctx)
 {
 	(void)ctx;
 	return SUCCESS;
 }
 
-static int dmabuf_memory_destroy(struct memory_ctx *ctx)
+static int dmabuf_coh_memory_destroy(struct memory_ctx *ctx)
 {
-	free(container_of(ctx, struct dmabuf_memory_ctx, base));
+	free(container_of(ctx, struct dmabuf_coh_memory_ctx, base));
 	return SUCCESS;
 }
 
-int dmabuf_alloc_region(uint64_t size, int *fd_out, void **addr_out)
+int dmabuf_coh_alloc_region(uint64_t size, int *fd_out, void **addr_out)
 {
-	struct sb_alloc_data req = {
+	struct dc_alloc_data req = {
 		.len      = size,
 		.fd_flags = O_RDWR | O_CLOEXEC,
 		.reserved = 0,
 	};
 	int sb_fd;
 
-	sb_fd = open(SB_DEV, O_RDWR);
+	sb_fd = open(DC_DEV, O_RDWR);
 	if (sb_fd < 0) {
-		fprintf(stderr, "dmabuf: open(%s) failed: %s\n", SB_DEV, strerror(errno));
+		fprintf(stderr, "dmabuf: open(%s) failed: %s\n", DC_DEV, strerror(errno));
 		return FAILURE;
 	}
 
-	if (ioctl(sb_fd, SB_IOC_ALLOC, &req) < 0) {
-		fprintf(stderr, "dmabuf: SB_IOC_ALLOC failed (size=%" PRIu64 "): %s\n",
+	if (ioctl(sb_fd, DC_IOC_ALLOC, &req) < 0) {
+		fprintf(stderr, "dmabuf: DC_IOC_ALLOC failed (size=%" PRIu64 "): %s\n",
 			size, strerror(errno));
 		close(sb_fd);
 		return FAILURE;
@@ -81,7 +81,7 @@ int dmabuf_alloc_region(uint64_t size, int *fd_out, void **addr_out)
 	return SUCCESS;
 }
 
-void dmabuf_free_region(int fd, void *addr, uint64_t size)
+void dmabuf_coh_free_region(int fd, void *addr, uint64_t size)
 {
 	if (addr)
 		munmap(addr, size);
@@ -89,16 +89,16 @@ void dmabuf_free_region(int fd, void *addr, uint64_t size)
 		close(fd);
 }
 
-static int dmabuf_memory_allocate_buffer(struct memory_ctx *ctx, int alignment,
+static int dmabuf_coh_memory_allocate_buffer(struct memory_ctx *ctx, int alignment,
 					 uint64_t size, int *dmabuf_fd,
 					 uint64_t *dmabuf_offset, void **addr,
 					 bool *can_init)
 {
-	struct dmabuf_memory_ctx *dctx = container_of(ctx, struct dmabuf_memory_ctx, base);
+	struct dmabuf_coh_memory_ctx *dctx = container_of(ctx, struct dmabuf_coh_memory_ctx, base);
 
 	(void)alignment;
 
-	if (dmabuf_alloc_region(size, dmabuf_fd, addr) != SUCCESS)
+	if (dmabuf_coh_alloc_region(size, dmabuf_fd, addr) != SUCCESS)
 		return FAILURE;
 
 	*dmabuf_offset = 0;
@@ -107,7 +107,7 @@ static int dmabuf_memory_allocate_buffer(struct memory_ctx *ctx, int alignment,
 	return SUCCESS;
 }
 
-static int dmabuf_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,
+static int dmabuf_coh_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,
 				     void *addr, uint64_t size)
 {
 	(void)ctx;
@@ -117,16 +117,16 @@ static int dmabuf_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,
 	return SUCCESS;
 }
 
-struct memory_ctx *dmabuf_memory_create(struct perftest_parameters *params)
+struct memory_ctx *dmabuf_coh_memory_create(struct perftest_parameters *params)
 {
-	struct dmabuf_memory_ctx *ctx;
+	struct dmabuf_coh_memory_ctx *ctx;
 
 	(void)params;
-	ALLOCATE(ctx, struct dmabuf_memory_ctx, 1);
-	ctx->base.init = dmabuf_memory_init;
-	ctx->base.destroy = dmabuf_memory_destroy;
-	ctx->base.allocate_buffer = dmabuf_memory_allocate_buffer;
-	ctx->base.free_buffer = dmabuf_memory_free_buffer;
+	ALLOCATE(ctx, struct dmabuf_coh_memory_ctx, 1);
+	ctx->base.init = dmabuf_coh_memory_init;
+	ctx->base.destroy = dmabuf_coh_memory_destroy;
+	ctx->base.allocate_buffer = dmabuf_coh_memory_allocate_buffer;
+	ctx->base.free_buffer = dmabuf_coh_memory_free_buffer;
 	ctx->base.copy_host_to_buffer = memcpy;
 	ctx->base.copy_buffer_to_host = memcpy;
 	ctx->base.copy_buffer_to_buffer = memcpy;

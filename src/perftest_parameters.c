@@ -22,7 +22,8 @@
 #include "mlu_memory.h"
 #include "opencl_memory.h"
 #include "dm_memory.h"
-#include "dmabuf_memory.h"
+#include "dm_coh_memory.h"
+#include "nvgpu_memory.h"
 #include<math.h>
 #ifdef HAVE_RO
 #include <stdbool.h>
@@ -668,6 +669,11 @@ static void usage(const char *argv0, VerbType verb, TestType tst, int connection
 			}
 		}
 
+		if (nvgpu_memory_supported()) {
+			printf("      --use_nvgpu=<gpu index>");
+			printf(" CC sealed GPU bounce buffer: encrypt-copy vidmem into unprotected sysmem (libnvgpu), then DMA. Egress/WRITE only\n");
+		}
+
 		if (rocm_memory_supported()) {
 			printf("      --use_rocm=<rocm device id>");
 			printf(" Use selected ROCm device for GPUDirect RDMA testing\n");
@@ -953,6 +959,7 @@ static void init_perftest_params(struct perftest_parameters *user_param)
 	user_param->memory_type		= MEMORY_HOST;
 	user_param->memory_create	= host_memory_create;
 	user_param->cuda_device_id	= 0;
+	user_param->nvgpu_device_id	= 0;
 	user_param->cuda_device_bus_id	= NULL;
 	user_param->use_cuda_dmabuf	= 0;
 	user_param->use_cuda_pcie_mapping = 0;
@@ -2785,6 +2792,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	static int use_cuda_bus_id_flag = 0;
 	static int use_cuda_dmabuf_flag = 0;
 	static int use_dmabuf_flag = 0;
+	static int use_nvgpu_flag = 0;
 	static int use_cuda_pcie_mapping_flag = 0;
 	static int use_data_direct_flag = 0;
 	static int cuda_mem_type_flag = 0;
@@ -2982,6 +2990,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 			{ .name = "use_cuda_bus_id",	.has_arg = 1, .flag = &use_cuda_bus_id_flag, .val = 1},
 			{ .name = "use_cuda_dmabuf",	.has_arg = 0, .flag = &use_cuda_dmabuf_flag, .val = 1},
 			{ .name = "use_dmabuf",		.has_arg = 0, .flag = &use_dmabuf_flag, .val = 1},
+			{ .name = "use_nvgpu",		.has_arg = 1, .flag = &use_nvgpu_flag, .val = 1},
 			{ .name = "use_cuda_pcie_mapping", .has_arg = 0, .flag = &use_cuda_pcie_mapping_flag, .val = 1},
 			{ .name = "use_data_direct",	.has_arg = 0, .flag = &use_data_direct_flag, .val = 1},
 			{ .name = "cuda_mem_type",	.has_arg = 1, .flag = &cuda_mem_type_flag, .val = 1},
@@ -3451,6 +3460,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				    (use_mlu_flag && !mlu_memory_supported()) ||
 				    (use_mlu_dmabuf_flag && !mlu_memory_dmabuf_supported()) ||
 				    (use_opencl_flag && !opencl_memory_supported()) ||
+				    (use_nvgpu_flag && !nvgpu_memory_supported()) ||
 				    (use_ib_dm_dmabuf_flag && !dm_memory_dmabuf_supported())) {
 					printf(" Unsupported memory type\n");
 					return FAILURE;
@@ -3462,7 +3472,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				/* Memory types are mutually exclucive, make sure we were not already asked to use a different memory type. */
 				if (user_param->memory_type != MEMORY_HOST &&
 				    (mmap_file_flag || use_mlu_flag || use_neuron_flag || use_hl_flag ||
-						use_ib_dm_dmabuf_flag || use_dmabuf_flag ||
+						use_ib_dm_dmabuf_flag || use_dmabuf_flag || use_nvgpu_flag ||
 					 (use_rocm_flag && user_param->memory_type != MEMORY_ROCM) ||
 				     ((use_cuda_flag || use_cuda_bus_id_flag) && user_param->memory_type != MEMORY_CUDA))) {
 					fprintf(stderr, " Can't use multiple memory types\n");
@@ -3492,8 +3502,14 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				}
 				if (use_dmabuf_flag) {
 					user_param->memory_type = MEMORY_DMABUF;
-					user_param->memory_create = dmabuf_memory_create;
+					user_param->memory_create = dmabuf_coh_memory_create;
 					use_dmabuf_flag = 0;
+				}
+				if (use_nvgpu_flag) {
+					CHECK_VALUE_NON_NEGATIVE(user_param->nvgpu_device_id,int,"NVGPU device",not_int_ptr);
+					user_param->memory_type = MEMORY_NVGPU;
+					user_param->memory_create = nvgpu_memory_create;
+					use_nvgpu_flag = 0;
 				}
 				if (use_data_direct_flag) {
 				    user_param->use_data_direct = 1;

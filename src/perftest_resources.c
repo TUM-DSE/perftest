@@ -1,3 +1,4 @@
+#include "src/perftest_parameters.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1987,6 +1988,11 @@ static int initialize_buffer_content(struct pingpong_context *ctx,
 				     struct perftest_parameters *user_param,
 				     int qp_index, bool can_init_mem)
 {
+	void *fill_buf = (ctx->memory && ctx->memory->get_fill_buffer)
+	                 ? ctx->memory->get_fill_buffer(ctx->memory)
+	                 : ctx->buf[qp_index];
+	bool fill_is_device = fill_buf && (fill_buf != ctx->buf[qp_index]);
+
 	/* Data validation: fill patterns on host, then copy to device */
 	if (user_param->data_validation) {
 		uint64_t payload_size = ctx->size;
@@ -2024,11 +2030,11 @@ static int initialize_buffer_content(struct pingpong_context *ctx,
 		}
 
 		if (ctx->memory && ctx->memory->copy_host_to_buffer) {
-			ctx->memory->copy_host_to_buffer(ctx->buf[qp_index], host_buf, ctx->buff_size);
+			ctx->memory->copy_host_to_buffer(fill_buf, host_buf, ctx->buff_size);
 			if (user_param->data_validation_debug)
 				printf("Data validation: Copied %lu bytes to device memory\n", ctx->buff_size);
 		} else {
-			memcpy(ctx->buf[qp_index], host_buf, ctx->buff_size);
+			memcpy(fill_buf, host_buf, ctx->buff_size);
 		}
 
 		free(host_buf);
@@ -2039,18 +2045,41 @@ static int initialize_buffer_content(struct pingpong_context *ctx,
 		return 0;
 
 	uint32_t rng_state = init_perftest_rand_state();
-	if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && user_param->tst == LAT) {
-		memset(ctx->buf[qp_index], 0, ctx->buff_size);
-	} else {
-		uint64_t i;
-		if (user_param->has_payload_modification) {
-			for (i = 0; i < ctx->buff_size; i++) {
-				((char*)ctx->buf[qp_index])[i] = user_param->payload_content[i % user_param->payload_length];
-			}
+
+	if (fill_is_device) {
+		char *host_buf = (char *)malloc(ctx->buff_size);
+		if (!host_buf) {
+			fprintf(stderr, "Failed to allocate host buffer for bounce buffer init\n");
+			return -1;
+		}
+
+		if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && user_param->tst == LAT) {
+			memset(host_buf, 0, ctx->buff_size);
+		} else if (user_param->has_payload_modification) {
+			uint64_t i;
+			for (i = 0; i < ctx->buff_size; i++)
+				host_buf[i] = user_param->payload_content[i % user_param->payload_length];
 		} else {
-			uint32_t *buf_ptr = (uint32_t*)ctx->buf[qp_index];
-			for (i = 0; i < ctx->buff_size/4; i++) {
+			uint32_t *buf_ptr = (uint32_t *)host_buf;
+			uint64_t i;
+			for (i = 0; i < ctx->buff_size / 4; i++)
 				buf_ptr[i] = perftest_rand(&rng_state);
+		}
+
+		ctx->memory->copy_host_to_buffer(fill_buf, host_buf, ctx->buff_size);
+		free(host_buf);
+	} else {
+		if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && user_param->tst == LAT) {
+			memset(fill_buf, 0, ctx->buff_size);
+		} else {
+			uint64_t i;
+			if (user_param->has_payload_modification) {
+				for (i = 0; i < ctx->buff_size; i++)
+					((char*)fill_buf)[i] = user_param->payload_content[i % user_param->payload_length];
+			} else {
+				uint32_t *buf_ptr = (uint32_t *)fill_buf;
+				for (i = 0; i < ctx->buff_size / 4; i++)
+					buf_ptr[i] = perftest_rand(&rng_state);
 			}
 		}
 	}
@@ -4111,7 +4140,7 @@ int ctx_set_recv_wqes(struct pingpong_context *ctx,struct perftest_parameters *u
 				ctx->rwr[i * user_param->recv_post_list + j].sg_list = NULL;
 				ctx->rwr[i * user_param->recv_post_list + j].num_sge = 0;
 			}
-			else 
+			else
 #endif
 			{
 				ctx->rwr[i * user_param->recv_post_list + j].sg_list = &ctx->recv_sge_list[i * user_param->recv_post_list + j];
@@ -4456,11 +4485,10 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					break;
 
 
-			// TEO
-			if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+			if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 				if (err != SUCCESS) {
-					fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
+					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 					return_value = FAILURE;
 					goto cleaning;
 				}
@@ -4468,9 +4496,18 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 			err = post_send_method(ctx, index, user_param);
 			if (err) {
-				fprintf(stderr,"Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n",index,ctx->scnt[index],err,user_param->tx_depth	);
+				fprintf(stderr, "Couldn't post send: qp %d scnt=%lu || err=%d tx_depth=%d\n", index, ctx->scnt[index], err, user_param->tx_depth);
 				return_value = FAILURE;
 				goto cleaning;
+			}
+
+			if (user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+				if (err != SUCCESS) {
+					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+					return_value = FAILURE;
+					goto cleaning;
+				}
 			}
 
 			/* if we have more than single flow and the burst iter is the last one */
@@ -4571,7 +4608,6 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 						return_value = FAILURE;
 						goto cleaning;
 					}
-
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)
@@ -4697,7 +4733,6 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 
 	gap_deadline = get_cycles();
 	atomic_base_addr = ctx->wr[num_of_qps].wr.atomic.remote_addr;
-
 	while (totscnt < tot_iters || totccnt < tot_iters ||
 		(user_param->test_type == DURATION && user_param->state != END_STATE)) {
 
@@ -4727,7 +4762,6 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 				}
 				if (user_param->post_list == 1 && (ctx->scnt[index] % user_param->cq_mod == 0 && user_param->cq_mod > 1)
 					&& !(ctx->scnt[index] == (user_param->iters - 1) && user_param->test_type == ITERATIONS)) {
-
 					ctx->wr[index].send_flags &= ~IBV_SEND_SIGNALED;
 				}
 
@@ -4759,6 +4793,15 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 					ctx->wr[index].next = atomic_wr;
 				} else {
 					ctx->wr[index].next = NULL;
+				}
+
+				if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
+					err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+					if (err != SUCCESS) {
+						fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
+						return_value = FAILURE;
+						goto cleaning;
+					}
 				}
 
 				err = post_send_method(ctx, index, user_param);
@@ -4846,6 +4889,15 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 				fprintf(stderr, "poll CQ failed %d\n", ne);
 				return_value = FAILURE;
 				goto cleaning;
+			}
+
+			if (ne > 0 && user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, ctx->buff_size);
+				if (err != SUCCESS) {
+					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu) in dv path\n");
+					return_value = FAILURE;
+					goto cleaning;
+				}
 			}
 		}
 	}
@@ -5914,6 +5966,14 @@ int run_iter_lat_write(struct pingpong_context *ctx,struct perftest_parameters *
 
 			*post_buf = (char)++scnt;
 
+			if (ctx->memory->copy_from_gpu_to_bounce_buffer) {
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+				if (err != SUCCESS) {
+					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
+					return 1;
+				}
+			}
+
 			err = post_send_method(ctx, 0, user_param);
 
 			if (err) {
@@ -6148,19 +6208,26 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 		if (user_param->test_type == ITERATIONS)
 			user_param->tposted[scnt++] = get_cycles();
 
-		// TEO
-		if(ctx->memory->copy_from_gpu_to_bounce_buffer) {
+		if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 			err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 			if (err != SUCCESS) {
-				fprintf(stderr,"Couldn't do bounce buffer copy, err=%d, size=%d\n",err,user_param->size);
+				fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 				return 1;
 			}
 		}
-		err = post_send_method(ctx, 0, user_param);
 
+		err = post_send_method(ctx, 0, user_param);
 		if (err) {
-			fprintf(stderr,"Couldn't post send: scnt=%lu\n",scnt);
+			fprintf(stderr, "Couldn't post send: scnt=%lu\n", scnt);
 			return 1;
+		}
+
+		if (user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+			err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+			if (err != SUCCESS) {
+				fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+				return 1;
+			}
 		}
 
 		if (user_param->test_type == DURATION && user_param->state == END_STATE)
@@ -7118,8 +7185,13 @@ int data_validation_init(struct pingpong_context *ctx,
 		markers_offset = ctx->tail_markers_offset;    /* NIC-written atomics */
 
 	{
+        void *vbuf = ctx->memory->validation_get_gpu_buffer ?
+            ctx->memory->validation_get_gpu_buffer(ctx->memory) :
+            ctx->buf[0];
+
+
 		struct validation_config vcfg = {
-			.buffer_base = ctx->buf[0],
+			.buffer_base = vbuf,
 			.markers_offset = markers_offset,
 			.recv_slots_offset = ctx->recv_slots_offset,
 			.payload_size = ctx->payload_size,

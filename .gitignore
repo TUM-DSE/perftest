@@ -59,3 +59,5 @@ debian/files
 debian/perftest
 
 compile_commands.json
+man/
+.perftest-install-path
