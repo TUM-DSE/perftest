@@ -332,6 +332,45 @@ AS_IF([test "x$enable_rocm_dmabuf" = xyes], [
        AC_DEFINE([HAVE_ROCM_DMABUF], [1], [Enable ROCm DMABUF feature])
 	   ])
 
+# libnvgpu CC sealed GPU bounce buffer (egress). Opt-in, and links the in-tree
+# libnvgpu static archive given via --with-nvgpu. Disabled by default so builds
+# that don't ship libnvgpu (e.g. the standalone perftest package) are unaffected.
+AC_ARG_ENABLE([nvgpu],
+              [AS_HELP_STRING([--enable-nvgpu],
+                              [Enable libnvgpu CC sealed bounce buffer support])
+              ],
+              [],
+              [enable_nvgpu=no])
+
+AC_ARG_WITH([nvgpu],
+            [AS_HELP_STRING([--with-nvgpu=@<:@libnvgpu path@:>@],
+                            [Path to the libnvgpu module (with include/nvgpu.h and libnvgpu.a)])
+            ],
+            [NVGPU_PATH=$withval],
+            [NVGPU_PATH=])
+
+NVGPU_CPPFLAGS=""
+NVGPU_LIBS=""
+AS_IF([test "x$enable_nvgpu" = xyes], [
+       AS_IF([test "x$NVGPU_PATH" = x],
+             [AC_MSG_ERROR([--enable-nvgpu requires --with-nvgpu=<libnvgpu path>])])
+       AS_IF([test ! -f "$NVGPU_PATH/include/nvgpu.h"],
+             [AC_MSG_ERROR([nvgpu.h not found under $NVGPU_PATH/include])])
+       AS_IF([test "x$HAVE_REG_DMABUF_MR" = "xno"],
+             [AC_MSG_ERROR([libnvgpu bounce buffer needs rdma-core dmabuf mr registration])])
+       NVGPU_CPPFLAGS="-I$NVGPU_PATH/include"
+       # libnvgpu.a then -lcrypto: csl.c does host-side AES-GCM via OpenSSL, so
+       # the archive has undefined EVP_*/HMAC_* refs that -lcrypto must resolve.
+       NVGPU_LIBS="$NVGPU_PATH/libnvgpu.a -lcrypto"
+       AC_CHECK_LIB([crypto], [EVP_EncryptInit_ex], [],
+                    [AC_MSG_ERROR([libnvgpu needs OpenSSL libcrypto (install openssl-dev)])])
+       AC_DEFINE([HAVE_NVGPU], [1], [Enable libnvgpu CC sealed bounce buffer])
+       AC_MSG_NOTICE([libnvgpu CC sealed bounce buffer enabled ($NVGPU_PATH)])
+       ])
+AC_SUBST([NVGPU_CPPFLAGS])
+AC_SUBST([NVGPU_LIBS])
+AM_CONDITIONAL([NVGPU], [test "x$enable_nvgpu" = xyes])
+
 AC_TRY_LINK([
 #include <infiniband/verbs.h>],
         [int x = IBV_ACCESS_ON_DEMAND;],[HAVE_EX_ODP=yes], [HAVE_EX_ODP=no])
