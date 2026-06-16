@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <nvgpu.h>
 
@@ -13,6 +14,9 @@
 
 #define NVGPU_TAG_BYTES 4096
 
+/* Report the running sealed-copy rate every this many copies (NVGPU_PROFILE=1). */
+#define NVGPU_PROFILE_EVERY 2000
+
 struct nvgpu_memory_ctx {
   struct memory_ctx base;
   int gpu_index;
@@ -21,7 +25,19 @@ struct nvgpu_memory_ctx {
   nvgpu_mem_t *host;
   nvgpu_mem_t *tag;
   uint64_t buf_size;
+  /* NVGPU_PROFILE: time the GPU->sysmem sealed copy in isolation (no NIC), so we
+   * can tell whether the bottleneck is the copy itself or the RDMA side. */
+  int profile;
+  uint64_t prof_copies;
+  uint64_t prof_ns;
+  uint64_t prof_bytes;
 };
+
+static inline uint64_t nvgpu_now_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+}
 
 static int nvgpu_memory_init(struct memory_ctx *ctx) {
   struct nvgpu_memory_ctx *m = container_of(ctx, struct nvgpu_memory_ctx, base);
@@ -31,11 +47,21 @@ static int nvgpu_memory_init(struct memory_ctx *ctx) {
     return FAILURE;
   }
 
+  /* nvgpu_open already created the CE and ran the one-time WLC bootstrap, so the first copy in
+   * the timed loop is warm -- no ~300 ms first-copy stall to drag the BW average below peak. */
   return SUCCESS;
 }
 
 static int nvgpu_memory_destroy(struct memory_ctx *ctx) {
   struct nvgpu_memory_ctx *m = container_of(ctx, struct nvgpu_memory_ctx, base);
+
+  if (m->profile && m->prof_copies > 0 && m->prof_ns > 0) {
+    fprintf(stderr,
+            "nvgpu_profile: final %llu copies: %.1f us/copy, %.2f GB/s (GPU->sysmem only)\n",
+            (unsigned long long)m->prof_copies,
+            (double)m->prof_ns / m->prof_copies / 1000.0,
+            (double)m->prof_bytes / m->prof_ns);
+  }
 
   if (m->g)
     nvgpu_close(m->g);
@@ -113,9 +139,27 @@ static int nvgpu_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,void *
 static int nvgpu_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx,size_t size) {
   struct nvgpu_memory_ctx *m = container_of(ctx, struct nvgpu_memory_ctx, base);
 
+  uint64_t t0 = m->profile ? nvgpu_now_ns() : 0;
+
   if (nvgpu_copy_to_host_sealed(m->g, m->host, m->tag, m->dev, size) != 0) {
     fprintf(stderr, "nvgpu: sealed GPU->sysmem copy (%zu B) failed: %s\n", size,strerror(errno));
     return FAILURE;
+  }
+
+  if (m->profile) {
+    m->prof_ns += nvgpu_now_ns() - t0;
+    m->prof_bytes += size;
+    if (++m->prof_copies >= NVGPU_PROFILE_EVERY) {
+      /* bytes/ns == GB/s. This is the GPU->sysmem copy rate only (the NIC DMA is
+       * separate), so it tells us if the sealed copy is the bottleneck. */
+      fprintf(stderr,
+              "nvgpu_profile: sealed copy %zu B: %.1f us/copy, %.2f GB/s (GPU->sysmem only)\n",
+              size, (double)m->prof_ns / m->prof_copies / 1000.0,
+              (double)m->prof_bytes / m->prof_ns);
+      m->prof_copies = 0;
+      m->prof_ns = 0;
+      m->prof_bytes = 0;
+    }
   }
   return SUCCESS;
 }
@@ -140,6 +184,7 @@ struct memory_ctx *nvgpu_memory_create(struct perftest_parameters *params) {
   ctx->base.copy_buffer_to_buffer = nvgpu_memory_copy_to_buffer;
   ctx->base.copy_from_gpu_to_bounce_buffer = nvgpu_copy_from_gpu_to_bounce_buffer;
   ctx->gpu_index = params->nvgpu_device_id;
+  ctx->profile = (getenv("NVGPU_PROFILE") != NULL);
 
   return &ctx->base;
 }
