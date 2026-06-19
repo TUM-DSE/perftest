@@ -123,6 +123,7 @@ struct memory_ctx *dmabuf_coh_memory_create(struct perftest_parameters *params)
 
 	(void)params;
 	ALLOCATE(ctx, struct dmabuf_coh_memory_ctx, 1);
+	memset(ctx, 0, sizeof(*ctx));
 	ctx->base.init = dmabuf_coh_memory_init;
 	ctx->base.destroy = dmabuf_coh_memory_destroy;
 	ctx->base.allocate_buffer = dmabuf_coh_memory_allocate_buffer;
