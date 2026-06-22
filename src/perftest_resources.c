@@ -5964,7 +5964,6 @@ int run_iter_lat_write(struct pingpong_context *ctx,struct perftest_parameters *
 			if (user_param->test_type == ITERATIONS)
 				user_param->tposted[scnt] = get_cycles();
 
-			/* Copy before stamping the sentinel byte, or the copy overwrites it and the ping-pong hangs. */
 			if (ctx->memory->copy_from_gpu_to_bounce_buffer) {
 				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 				if (err != SUCCESS) {
