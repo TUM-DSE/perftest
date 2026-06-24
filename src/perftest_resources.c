@@ -5949,6 +5949,14 @@ int run_iter_lat_write(struct pingpong_context *ctx,struct perftest_parameters *
 		if ((rcnt < user_param->iters || user_param->test_type == DURATION) && !(scnt < 1 && user_param->machine == SERVER)) {
 			rcnt++;
 			while (*poll_buf != (char)rcnt && user_param->state != END_STATE);
+
+			if (user_param->state != END_STATE && ctx->memory->copy_from_bounce_buffer_to_gpu) {
+				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+				if (err != SUCCESS) {
+					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+					return 1;
+				}
+			}
 		}
 
 		if (scnt < user_param->iters || user_param->test_type == DURATION) {
@@ -6084,6 +6092,14 @@ int run_iter_lat_write_imm(struct pingpong_context *ctx,struct perftest_paramete
 					return FAILURE;
 				}
 
+				if (ctx->memory->copy_from_bounce_buffer_to_gpu) {
+					err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+					if (err != SUCCESS) {
+						fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+						return FAILURE;
+					}
+				}
+
 				/*if we're in duration mode or there
 				 * is enough space in the rx_depth,
 				 * post that you received a packet.
@@ -6120,6 +6136,14 @@ int run_iter_lat_write_imm(struct pingpong_context *ctx,struct perftest_paramete
 
 			if (user_param->test_type == ITERATIONS)
 				user_param->tposted[scnt] = get_cycles();
+
+			if (ctx->memory->copy_from_gpu_to_bounce_buffer) {
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+				if (err != SUCCESS) {
+					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
+					return 1;
+				}
+			}
 
 			++scnt;
 			err = post_send_method(ctx, 0, user_param);
