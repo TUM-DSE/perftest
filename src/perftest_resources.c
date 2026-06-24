@@ -4485,7 +4485,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					break;
 
 
-			if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
+			if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 				if (err != SUCCESS) {
 					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
@@ -4795,7 +4795,7 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 					ctx->wr[index].next = NULL;
 				}
 
-				if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
+				if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && ctx->memory->copy_from_gpu_to_bounce_buffer) {
 					err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
 					if (err != SUCCESS) {
 						fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);

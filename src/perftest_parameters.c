@@ -2135,7 +2135,8 @@ static void force_dependecies(struct perftest_parameters *user_param)
 		exit(1);
 	}
 
-	if (user_param->memory_type == MEMORY_CUDA && user_param->tst == LAT && user_param->verb == WRITE) {
+	if (user_param->memory_type == MEMORY_CUDA && user_param->tst == LAT && user_param->verb == WRITE &&
+	    user_param->cuda_mem_type != CUDA_MEM_BOUNCE && user_param->cuda_mem_type != CUDA_MEM_BOUNCE_DMA_COH) {
 		printf(RESULT_LINE);
 		fprintf(stderr, "Perftest doesn't support CUDA latency test with write (without immediate) verb\n");
 		exit(1);
