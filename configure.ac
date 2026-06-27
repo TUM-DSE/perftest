@@ -371,6 +371,44 @@ AC_SUBST([NVGPU_CPPFLAGS])
 AC_SUBST([NVGPU_LIBS])
 AM_CONDITIONAL([NVGPU], [test "x$enable_nvgpu" = xyes])
 
+# libuvmgpu CC sealed GPU bounce buffer (UVM fork: sealed DtoH egress + sealed
+# HtoD ingress). Opt-in, and links the in-tree libuvmgpu static archive given via
+# --with-uvmgpu. Disabled by default so builds that don't ship libuvmgpu are
+# unaffected.
+AC_ARG_ENABLE([uvmgpu],
+              [AS_HELP_STRING([--enable-uvmgpu],
+                              [Enable libuvmgpu CC sealed bounce buffer support])
+              ],
+              [],
+              [enable_uvmgpu=no])
+
+AC_ARG_WITH([uvmgpu],
+            [AS_HELP_STRING([--with-uvmgpu=@<:@libuvmgpu path@:>@],
+                            [Path to the libuvmgpu module (with include/uvmgpu.h and libuvmgpu.a)])
+            ],
+            [UVMGPU_PATH=$withval],
+            [UVMGPU_PATH=])
+
+UVMGPU_CPPFLAGS=""
+UVMGPU_LIBS=""
+AS_IF([test "x$enable_uvmgpu" = xyes], [
+       AS_IF([test "x$UVMGPU_PATH" = x],
+             [AC_MSG_ERROR([--enable-uvmgpu requires --with-uvmgpu=<libuvmgpu path>])])
+       AS_IF([test ! -f "$UVMGPU_PATH/include/uvmgpu.h"],
+             [AC_MSG_ERROR([uvmgpu.h not found under $UVMGPU_PATH/include])])
+       AS_IF([test "x$HAVE_REG_DMABUF_MR" = "xno"],
+             [AC_MSG_ERROR([libuvmgpu bounce buffer needs rdma-core dmabuf mr registration])])
+       UVMGPU_CPPFLAGS="-I$UVMGPU_PATH/include"
+       # The CE does the crypto in-kernel, so the archive needs no host-side
+       # OpenSSL (unlike libnvgpu); link it plain.
+       UVMGPU_LIBS="$UVMGPU_PATH/libuvmgpu.a"
+       AC_DEFINE([HAVE_UVMGPU], [1], [Enable libuvmgpu CC sealed bounce buffer])
+       AC_MSG_NOTICE([libuvmgpu CC sealed bounce buffer enabled ($UVMGPU_PATH)])
+       ])
+AC_SUBST([UVMGPU_CPPFLAGS])
+AC_SUBST([UVMGPU_LIBS])
+AM_CONDITIONAL([UVMGPU], [test "x$enable_uvmgpu" = xyes])
+
 AC_TRY_LINK([
 #include <infiniband/verbs.h>],
         [int x = IBV_ACCESS_ON_DEMAND;],[HAVE_EX_ODP=yes], [HAVE_EX_ODP=no])
