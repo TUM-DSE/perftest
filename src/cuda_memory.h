@@ -20,9 +20,8 @@ bool data_direct_supported();
 
 bool cuda_gpu_touch_supported();
 
-
 struct memory_ctx *cuda_memory_create(struct perftest_parameters *params);
-
+struct memory_ctx *cuda_bounce_buffer_memory_create(struct perftest_parameters *params); // TEO
 
 #ifndef HAVE_CUDA
 
@@ -39,6 +38,12 @@ inline bool data_direct_supported() {
 }
 
 inline struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
+	return NULL;
+}
+
+// TEO
+struct memory_ctx *cuda_bounce_buffer_memory_create(struct perftest_parameters *params)
+{
 	return NULL;
 }
 

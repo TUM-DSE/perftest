@@ -55,9 +55,16 @@ struct memory_ctx {
 	void *(*copy_host_to_buffer)(void *dest, const void *src, size_t size);
 	void *(*copy_buffer_to_host)(void *dest, const void *src, size_t size);
 	void *(*copy_buffer_to_buffer)(void *dest, const void *src, size_t size);
-	/* Data validation interface (optional - NULL if not supported by memory type) */
-	int (*validation_init)(struct memory_ctx *ctx,
-		const struct validation_config *cfg);
+	int (*copy_from_gpu_to_bounce_buffer)(struct memory_ctx *ctx, size_t size);
+	int (*copy_from_bounce_buffer_to_gpu)(struct memory_ctx *ctx, size_t size);
+	// the buffer that perftest should write its fill data into
+	// when if differs from DMA buffer.
+	// -> used by bounce buffer approach where fill and dma buffer are different
+	void *(*get_fill_buffer)(struct memory_ctx *ctx);
+	// for cuda_memory validation. In the bounce buffer case ctx->buf[0] points to CPU buffer
+	// -> extra function to get gpu buffer needed
+	void* (*validation_get_gpu_buffer)(struct memory_ctx *ctx);
+	int (*validation_init)(struct memory_ctx *ctx,const struct validation_config *cfg);
 	int (*validation_start)(struct memory_ctx *ctx);
 	int (*validation_stop)(struct memory_ctx *ctx, struct data_validation_result *result);
 	void (*validation_destroy)(struct memory_ctx *ctx);

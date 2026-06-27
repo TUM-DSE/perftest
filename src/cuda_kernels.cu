@@ -24,6 +24,7 @@
 /* --- Global validation context (single instance, avoids dlsym ABI issues) --- */
 static struct ValidationContext g_ctx;
 static int g_initialized = 0;
+static cudaStream_t g_validation_stream = NULL;
 
 /* --- Error Handling --- */
 
@@ -597,6 +598,14 @@ extern "C" int validation_start(void *params, int num_blocks, int threads_per_bl
 
 	reset_validation_state();
 
+	if (g_validation_stream == NULL) {
+		err = cudaStreamCreateWithFlags(&g_validation_stream, cudaStreamNonBlocking);
+		if (err != cudaSuccess) {
+			fprintf(stderr, VALIDATION_LOG_PREFIX " Error creating validation stream: %s\n",cudaGetErrorString(err));
+			return -1;
+		}
+	}
+
 	uint8_t *recv_slots_base = (uint8_t*)g_ctx.params.recv_slots_addr;
 
 	VDBG("Launching kernel with %d blocks (%d threads each)\n",
@@ -606,7 +615,7 @@ extern "C" int validation_start(void *params, int num_blocks, int threads_per_bl
 	VDBG("payload_size: %lu, tx_depth: %u, num_qps: %u\n",
 	     g_ctx.params.payload_size, g_ctx.params.tx_depth, g_ctx.params.num_qps);
 
-	validation_kernel<<<g_ctx.num_blocks, VALIDATION_THREADS_PER_BLOCK>>>(
+	validation_kernel<<<g_ctx.num_blocks, VALIDATION_THREADS_PER_BLOCK, 0, g_validation_stream>>>(
 		g_ctx.d_tail_markers,
 		recv_slots_base,
 		g_ctx.params.payload_size,
@@ -704,6 +713,11 @@ extern "C" int validation_destroy(void)
 	free_validation_allocations();
 	memset(&g_ctx, 0, sizeof(g_ctx));
 	g_initialized = 0;
+
+	if (g_validation_stream != NULL) {
+		cudaStreamDestroy(g_validation_stream);
+		g_validation_stream = NULL;
+	}
 
 	if (debug)
 		printf(VALIDATION_LOG_PREFIX " Context destroyed, all memory freed\n");

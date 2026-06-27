@@ -459,7 +459,10 @@ enum memory_type {
 	MEMORY_HL,
 	MEMORY_MLU,
 	MEMORY_OPENCL,
-	MEMORY_DM
+	MEMORY_DM,
+	MEMORY_DMABUF,
+	MEMORY_NVGPU,
+	MEMORY_UVMGPU
 };
 
 enum cuda_mem_type {
@@ -468,6 +471,8 @@ enum cuda_mem_type {
 	CUDA_MEM_HOSTALLOC,
 	CUDA_MEM_HOSTREGISTER,
 	CUDA_MEM_MALLOC,
+	CUDA_MEM_BOUNCE,
+	CUDA_MEM_BOUNCE_DMA_COH,  /* CPU side: dma_heap_coh DMA-BUF (/dev/dma_heap/coh) */
 	CUDA_MEM_TYPES
 };
 
@@ -609,6 +614,8 @@ struct perftest_parameters {
 	enum memory_type		memory_type;
 	struct memory_ctx		*(*memory_create)(struct perftest_parameters *params);
 	int				cuda_device_id;
+	int				nvgpu_device_id;
+	int				uvmgpu_device_id;
 	char				*cuda_device_bus_id;
 	int				cuda_mem_type;
 	int				use_cuda_dmabuf;
