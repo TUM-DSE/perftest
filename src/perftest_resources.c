@@ -4486,7 +4486,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 
 			if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && ctx->memory->copy_from_gpu_to_bounce_buffer) {
-				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory,
+					ctx->wr[index].sg_list->addr, user_param->size);
 				if (err != SUCCESS) {
 					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 					return_value = FAILURE;
@@ -4502,7 +4503,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			}
 
 			if (user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
-				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory,
+					ctx->wr[index].sg_list->addr, user_param->size);
 				if (err != SUCCESS) {
 					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
 					return_value = FAILURE;
@@ -4796,7 +4798,8 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 				}
 
 				if ((user_param->verb == WRITE || user_param->verb == WRITE_IMM) && ctx->memory->copy_from_gpu_to_bounce_buffer) {
-					err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+					err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory,
+						ctx->wr[index].sg_list->addr, user_param->size);
 					if (err != SUCCESS) {
 						fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 						return_value = FAILURE;
@@ -4892,7 +4895,8 @@ int run_iter_bw_dv(struct pingpong_context *ctx, struct perftest_parameters *use
 			}
 
 			if (ne > 0 && user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
-				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, ctx->buff_size);
+				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory,
+					(uintptr_t)ctx->buf[0], ctx->buff_size);
 				if (err != SUCCESS) {
 					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu) in dv path\n");
 					return_value = FAILURE;
@@ -5950,10 +5954,12 @@ int run_iter_lat_write(struct pingpong_context *ctx,struct perftest_parameters *
 			rcnt++;
 			while (*poll_buf != (char)rcnt && user_param->state != END_STATE);
 
-			if (user_param->state != END_STATE && ctx->memory->copy_from_bounce_buffer_to_gpu) {
-				err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+			/* symmetrize the ping-pong; if server has no GPU we need 2 DtoH copies on the client */
+			if (user_param->state != END_STATE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory,
+					ctx->wr[0].sg_list->addr, user_param->size);
 				if (err != SUCCESS) {
-					fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 					return 1;
 				}
 			}
@@ -5973,7 +5979,8 @@ int run_iter_lat_write(struct pingpong_context *ctx,struct perftest_parameters *
 				user_param->tposted[scnt] = get_cycles();
 
 			if (ctx->memory->copy_from_gpu_to_bounce_buffer) {
-				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory,
+					ctx->wr[0].sg_list->addr, user_param->size);
 				if (err != SUCCESS) {
 					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 					return 1;
@@ -6092,10 +6099,12 @@ int run_iter_lat_write_imm(struct pingpong_context *ctx,struct perftest_paramete
 					return FAILURE;
 				}
 
-				if (ctx->memory->copy_from_bounce_buffer_to_gpu) {
-					err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+				/* symmetrize the ping-pong; if server has no GPU we need 2 DtoH copies on the client */
+				if (ctx->memory->copy_from_gpu_to_bounce_buffer) {
+					err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory,
+						ctx->wr[0].sg_list->addr, user_param->size);
 					if (err != SUCCESS) {
-						fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
+						fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 						return FAILURE;
 					}
 				}
@@ -6138,7 +6147,8 @@ int run_iter_lat_write_imm(struct pingpong_context *ctx,struct perftest_paramete
 				user_param->tposted[scnt] = get_cycles();
 
 			if (ctx->memory->copy_from_gpu_to_bounce_buffer) {
-				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+				err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory,
+					ctx->wr[0].sg_list->addr, user_param->size);
 				if (err != SUCCESS) {
 					fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 					return 1;
@@ -6233,7 +6243,8 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 			user_param->tposted[scnt++] = get_cycles();
 
 		if (user_param->verb == WRITE && ctx->memory->copy_from_gpu_to_bounce_buffer) {
-			err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory, user_param->size);
+			err = ctx->memory->copy_from_gpu_to_bounce_buffer(ctx->memory,
+				ctx->wr[0].sg_list->addr, user_param->size);
 			if (err != SUCCESS) {
 				fprintf(stderr, "Couldn't do bounce buffer copy (gpu->cpu), err=%d, size=%lu\n", err, user_param->size);
 				return 1;
@@ -6247,7 +6258,8 @@ int run_iter_lat(struct pingpong_context *ctx,struct perftest_parameters *user_p
 		}
 
 		if (user_param->verb == READ && ctx->memory->copy_from_bounce_buffer_to_gpu) {
-			err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory, user_param->size);
+			err = ctx->memory->copy_from_bounce_buffer_to_gpu(ctx->memory,
+				ctx->wr[0].sg_list->addr, user_param->size);
 			if (err != SUCCESS) {
 				fprintf(stderr, "Couldn't do bounce buffer copy (cpu->gpu), err=%d, size=%lu\n", err, user_param->size);
 				return 1;

@@ -4,8 +4,12 @@
  */
 
 #include <cuda.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include "cuda_memory.h"
 #include "perftest_parameters.h"
@@ -24,6 +28,21 @@ static void cuda_validation_destroy(struct memory_ctx *ctx);
 } while (0)
 
 #define ACCEL_PAGE_SIZE (64 * 1024)
+#define CUDA_BOUNCE_GCM_IV_SIZE 12
+#define CUDA_BOUNCE_GCM_TAG_SIZE 16
+/* ib_write_lat uses the last byte as its clear-text arrival sentinel. */
+#define CUDA_BOUNCE_SIGNAL_SIZE 1
+#define CUDA_BOUNCE_GCM_OVERHEAD \
+	(CUDA_BOUNCE_GCM_IV_SIZE + CUDA_BOUNCE_GCM_TAG_SIZE + CUDA_BOUNCE_SIGNAL_SIZE)
+
+/* Benchmark-only key. Session establishment and key exchange are intentionally
+ * outside the measurement; this key must never be used for real data. */
+static const unsigned char cuda_bounce_gcm_key[32] = {
+	0x61, 0x19, 0xd2, 0x8b, 0xf0, 0xa4, 0x74, 0x9e,
+	0x3c, 0x80, 0x2f, 0x1a, 0x56, 0xd7, 0xc3, 0x05,
+	0xa8, 0x4d, 0x93, 0x72, 0x0e, 0xbe, 0x35, 0xca,
+	0x17, 0x68, 0xe1, 0x4f, 0xb9, 0x22, 0x5d, 0x7c,
+};
 
 static const char *cuda_mem_type_str[] = {
 	"CUDA_MEM_DEVICE",
@@ -57,7 +76,52 @@ struct cuda_memory_ctx {
 	// CPU-side buffer for CUDA_MEM_BOUNCE_DMA_COH (dma_heap_coh DMA-BUF)
 	int swiotlb_dmabuf_fd;
 	void *swiotlb_dmabuf_addr;
+	// openssl software side encryption / decryption
+	void *private_plaintext_addr;
+	EVP_CIPHER_CTX *encrypt_ctx;
+	EVP_CIPHER_CTX *decrypt_ctx;
+	unsigned char nonce_prefix[4];
+	uint64_t nonce_counter;
 };
+
+static int cuda_bounce_gcm_init(struct cuda_memory_ctx *ctx)
+{
+	ctx->encrypt_ctx = EVP_CIPHER_CTX_new();
+	ctx->decrypt_ctx = EVP_CIPHER_CTX_new();
+	if (!ctx->encrypt_ctx || !ctx->decrypt_ctx) {
+		fprintf(stderr, "cuda_bounce_dma_coh: EVP_CIPHER_CTX_new failed\n");
+		return FAILURE;
+	}
+
+	if (RAND_bytes(ctx->nonce_prefix, sizeof(ctx->nonce_prefix)) != 1) {
+		fprintf(stderr, "cuda_bounce_dma_coh: RAND_bytes failed\n");
+		return FAILURE;
+	}
+
+	if (EVP_EncryptInit_ex(ctx->encrypt_ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
+	    EVP_CIPHER_CTX_ctrl(ctx->encrypt_ctx, EVP_CTRL_GCM_SET_IVLEN,
+				CUDA_BOUNCE_GCM_IV_SIZE, NULL) != 1 ||
+	    EVP_EncryptInit_ex(ctx->encrypt_ctx, NULL, NULL, cuda_bounce_gcm_key, NULL) != 1 ||
+	    EVP_DecryptInit_ex(ctx->decrypt_ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
+	    EVP_CIPHER_CTX_ctrl(ctx->decrypt_ctx, EVP_CTRL_GCM_SET_IVLEN,
+				CUDA_BOUNCE_GCM_IV_SIZE, NULL) != 1 ||
+	    EVP_DecryptInit_ex(ctx->decrypt_ctx, NULL, NULL, cuda_bounce_gcm_key, NULL) != 1) {
+		fprintf(stderr, "cuda_bounce_dma_coh: AES-256-GCM context initialization failed\n");
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
+static void cuda_bounce_make_iv(struct cuda_memory_ctx *ctx, unsigned char *iv)
+{
+	uint64_t counter = ctx->nonce_counter;
+	int i;
+
+	memcpy(iv, ctx->nonce_prefix, sizeof(ctx->nonce_prefix));
+	for (i = 0; i < 8; ++i)
+		iv[CUDA_BOUNCE_GCM_IV_SIZE - 1 - i] = (unsigned char)(counter >> (i * 8));
+}
 
 static int init_gpu(struct cuda_memory_ctx *ctx)
 {
@@ -183,6 +247,10 @@ int cuda_memory_init(struct memory_ctx *ctx) {
 		return FAILURE;
 	}
 
+	if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_DMA_COH &&
+	    cuda_bounce_gcm_init(cuda_ctx) != SUCCESS)
+		return FAILURE;
+
 #ifdef HAVE_CUDA_DMABUF
 	if (cuda_ctx->use_dmabuf) {
 		int is_supported = 0;
@@ -209,6 +277,9 @@ int cuda_memory_destroy(struct memory_ctx *ctx) {
 		free_gpu(cuda_ctx);
 	}
 
+	EVP_CIPHER_CTX_free(cuda_ctx->encrypt_ctx);
+	EVP_CIPHER_CTX_free(cuda_ctx->decrypt_ctx);
+
 	if (cuda_ctx) {
 		free(cuda_ctx);
 	}
@@ -221,23 +292,44 @@ int cuda_memory_destroy(struct memory_ctx *ctx) {
 	return SUCCESS;
 }
 
-int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
+int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx, uintptr_t bounce_buffer, size_t size)
 {
 	struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
 
 	if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_DMA_COH) {
-		void *cpu_side = cuda_ctx->swiotlb_dmabuf_addr;
+		if (size <= CUDA_BOUNCE_GCM_OVERHEAD)
+			return FAILURE;
+		unsigned char *record = (unsigned char *)bounce_buffer;
+		size_t payload_size = size - CUDA_BOUNCE_GCM_OVERHEAD;
+		int output_length;
+
 		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-		int error = p_cuMemcpyDtoH(cpu_side, gpu_side, size);
+		int error = p_cuMemcpyDtoH(cuda_ctx->private_plaintext_addr, gpu_side, payload_size);
 		if (error != CUDA_SUCCESS) {
 			fprintf(stderr, "cuda_bounce_dma_coh: cuMemcpyDtoH failed: %d\n", error);
 			return FAILURE;
 		}
+
+		cuda_bounce_make_iv(cuda_ctx, record);
+		if (EVP_EncryptInit_ex(cuda_ctx->encrypt_ctx, NULL, NULL, NULL, record) != 1 ||
+		    EVP_EncryptUpdate(cuda_ctx->encrypt_ctx, record + CUDA_BOUNCE_GCM_IV_SIZE,
+				      &output_length, cuda_ctx->private_plaintext_addr,
+				      (int)payload_size) != 1 ||
+		    EVP_EncryptFinal_ex(cuda_ctx->encrypt_ctx,
+					record + CUDA_BOUNCE_GCM_IV_SIZE + payload_size,
+					&output_length) != 1 ||
+		    EVP_CIPHER_CTX_ctrl(cuda_ctx->encrypt_ctx, EVP_CTRL_GCM_GET_TAG,
+					CUDA_BOUNCE_GCM_TAG_SIZE,
+					record + CUDA_BOUNCE_GCM_IV_SIZE + payload_size) != 1) {
+			fprintf(stderr, "cuda_bounce_dma_coh: AES-256-GCM encryption failed\n");
+			return FAILURE;
+		}
+		++cuda_ctx->nonce_counter;
 		return SUCCESS;
 	}
 
 	if(cuda_ctx->mem_type == CUDA_MEM_BOUNCE) {
-    	CUdeviceptr cpu_side = (CUdeviceptr)cuda_ctx->cpu_bounce_buf_addr;
+		CUdeviceptr cpu_side = (CUdeviceptr)bounce_buffer;
     	CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
     	int error = p_cuMemcpy(cpu_side, gpu_side, size);
     	if (error != CUDA_SUCCESS) {
@@ -249,14 +341,33 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx* ctx, size_t size)
 	return SUCCESS;
 }
 
-int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx* ctx, size_t size)
+int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx *ctx, uintptr_t bounce_buffer, size_t size)
 {
     struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
 
     if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_DMA_COH) {
-		void *cpu_side = cuda_ctx->swiotlb_dmabuf_addr;
+		if (size <= CUDA_BOUNCE_GCM_OVERHEAD)
+			return FAILURE;
+		unsigned char *record = (unsigned char *)bounce_buffer;
+		size_t payload_size = size - CUDA_BOUNCE_GCM_OVERHEAD;
+		int output_length;
+
+		if (EVP_DecryptInit_ex(cuda_ctx->decrypt_ctx, NULL, NULL, NULL, record) != 1 ||
+		    EVP_DecryptUpdate(cuda_ctx->decrypt_ctx, cuda_ctx->private_plaintext_addr,
+					   &output_length, record + CUDA_BOUNCE_GCM_IV_SIZE,
+				      (int)payload_size) != 1 ||
+		    EVP_CIPHER_CTX_ctrl(cuda_ctx->decrypt_ctx, EVP_CTRL_GCM_SET_TAG,
+					CUDA_BOUNCE_GCM_TAG_SIZE,
+					record + CUDA_BOUNCE_GCM_IV_SIZE + payload_size) != 1 ||
+		    EVP_DecryptFinal_ex(cuda_ctx->decrypt_ctx,
+					(unsigned char *)cuda_ctx->private_plaintext_addr + payload_size,
+					&output_length) != 1) {
+			fprintf(stderr, "cuda_bounce_dma_coh: AES-256-GCM authentication/decryption failed\n");
+			return FAILURE;
+		}
+
 		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-		int error = p_cuMemcpyHtoD(gpu_side, cpu_side, size);
+		int error = p_cuMemcpyHtoD(gpu_side, cuda_ctx->private_plaintext_addr, payload_size);
 		if (error != CUDA_SUCCESS) {
 			fprintf(stderr, "cuda_bounce_dma_coh: cuMemcpyHtoD failed: %d\n", error);
 			return FAILURE;
@@ -265,7 +376,7 @@ int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx* ctx, size_t size)
 	}
 
 	if(cuda_ctx->mem_type == CUDA_MEM_BOUNCE) {
-       	CUdeviceptr cpu_side = (CUdeviceptr)cuda_ctx->cpu_bounce_buf_addr;
+		CUdeviceptr cpu_side = (CUdeviceptr)bounce_buffer;
        	CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
        	int error = p_cuMemcpy(gpu_side, cpu_side, size);
        	if (error != CUDA_SUCCESS) {
@@ -351,7 +462,15 @@ static int cuda_allocate_bounce_dma_coh_buffer(
 		cuda_ctx->gpu_bounce_buf_addr = NULL;
 		return FAILURE;
 	}
-
+	cuda_ctx->private_plaintext_addr = malloc(size);
+	if (!cuda_ctx->private_plaintext_addr) {
+		fprintf(stderr, "cuda_bounce_dma_coh: private plaintext allocation failed\n");
+		dmabuf_coh_free_region(cuda_ctx->swiotlb_dmabuf_fd,cuda_ctx->swiotlb_dmabuf_addr, size);
+		cuda_ctx->swiotlb_dmabuf_addr = NULL;
+		p_cuMemFree(d_A);
+		cuda_ctx->gpu_bounce_buf_addr = NULL;
+		return FAILURE;
+	}
 	*dmabuf_fd     = cuda_ctx->swiotlb_dmabuf_fd;
 	*dmabuf_offset = 0;
 	*addr          = cuda_ctx->swiotlb_dmabuf_addr;
@@ -571,6 +690,8 @@ int cuda_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd, void *addr, u
 				cuda_ctx->gpu_bounce_buf_addr = NULL;
 			}
 			dmabuf_coh_free_region(cuda_ctx->swiotlb_dmabuf_fd, addr, size);
+			free(cuda_ctx->private_plaintext_addr);
+			cuda_ctx->private_plaintext_addr = NULL;
 			cuda_ctx->swiotlb_dmabuf_fd = 0;
 			cuda_ctx->swiotlb_dmabuf_addr = NULL;
 			break;

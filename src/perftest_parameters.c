@@ -653,7 +653,7 @@ static void usage(const char *argv0, VerbType verb, TestType tst, int connection
 			printf("      --use_cuda=<cuda device id>");
 			printf(" Use CUDA specific device for GPUDirect RDMA testing\n");
 			printf("      --cuda_mem_type=<value>");
-			printf(" Set CUDA memory type <value>=0(device,default),1(managed),4(malloc),5(bounce),6(bounce_no_swiotlb)\n");
+			printf(" Set CUDA memory type <value>=0(device,default),1(managed),4(malloc),5(bounce),6(encrypted CPU bounce)\n");
 
 			printf("      --use_cuda_bus_id=<cuda full BUS id>");
 			printf(" Use CUDA specific device, based on its full PCIe address, for GPUDirect RDMA testing\n");

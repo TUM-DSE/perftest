@@ -7,10 +7,10 @@
 
 #include <uvmgpu.h>
 
-#include "memory.h"
-#include "uvmgpu_memory.h"
 #include "dm_coh_memory.h"
+#include "memory.h"
 #include "perftest_parameters.h"
+#include "uvmgpu_memory.h"
 
 struct uvmgpu_memory_ctx {
   struct memory_ctx base;
@@ -20,16 +20,18 @@ struct uvmgpu_memory_ctx {
   uvmgpu_buf_t host;
   int host_fd;
   void *host_addr;
-  uint64_t buf_size;
+  uint64_t host_total;
   bool dev_armed;
   bool host_armed;
 };
 
 static int uvmgpu_memory_init(struct memory_ctx *ctx) {
-  struct uvmgpu_memory_ctx *m = container_of(ctx, struct uvmgpu_memory_ctx, base);
+  struct uvmgpu_memory_ctx *m =
+      container_of(ctx, struct uvmgpu_memory_ctx, base);
 
   if (uvmgpu_open(m->gpu_index, &m->g) != 0) {
-    fprintf(stderr, "uvmgpu: uvmgpu_open(gpu=%d) failed: %s\n", m->gpu_index,strerror(errno));
+    fprintf(stderr, "uvmgpu: uvmgpu_open(gpu=%d) failed: %s\n", m->gpu_index,
+            strerror(errno));
     return FAILURE;
   }
 
@@ -37,7 +39,8 @@ static int uvmgpu_memory_init(struct memory_ctx *ctx) {
 }
 
 static int uvmgpu_memory_destroy(struct memory_ctx *ctx) {
-  struct uvmgpu_memory_ctx *m = container_of(ctx, struct uvmgpu_memory_ctx, base);
+  struct uvmgpu_memory_ctx *m =
+      container_of(ctx, struct uvmgpu_memory_ctx, base);
 
   if (m->g)
     uvmgpu_close(m->g);
@@ -55,7 +58,7 @@ static void uvmgpu_release_buffers(struct uvmgpu_memory_ctx *m) {
     m->dev_armed = false;
   }
   if (m->host_addr) {
-    dmabuf_coh_free_region(m->host_fd, m->host_addr, m->buf_size);
+    dmabuf_coh_free_region(m->host_fd, m->host_addr, m->host_total);
     m->host_addr = NULL;
     m->host_fd = -1;
   }
@@ -65,25 +68,31 @@ static int uvmgpu_memory_allocate_buffer(struct memory_ctx *ctx, int alignment,
                                          uint64_t size, int *dmabuf_fd,
                                          uint64_t *dmabuf_offset, void **addr,
                                          bool *can_init) {
-  struct uvmgpu_memory_ctx *m = container_of(ctx, struct uvmgpu_memory_ctx, base);
+  struct uvmgpu_memory_ctx *m =
+      container_of(ctx, struct uvmgpu_memory_ctx, base);
 
   (void)alignment;
 
-  m->buf_size = size;
+  m->host_total = uvmgpu_sealed_dtoh_buf_bytes(size);
 
   if (uvmgpu_alloc_device(m->g, size, &m->dev) != 0) {
-    fprintf(stderr, "uvmgpu: alloc device vidmem (%lu B) failed: %s\n",(unsigned long)size, strerror(errno));
+    fprintf(stderr, "uvmgpu: alloc device vidmem (%lu B) failed: %s\n",
+            (unsigned long)size, strerror(errno));
     goto fail;
   }
   m->dev_armed = true;
 
-  if (dmabuf_coh_alloc_region(size, &m->host_fd, &m->host_addr) != SUCCESS) {
-    fprintf(stderr, "uvmgpu: alloc host ciphertext dmabuf (%lu B) failed\n",(unsigned long)size);
+  if (dmabuf_coh_alloc_region(m->host_total, &m->host_fd, &m->host_addr) !=
+      SUCCESS) {
+    fprintf(stderr, "uvmgpu: alloc host dmabuf (%lu B) failed\n",
+            (unsigned long)m->host_total);
     goto fail;
   }
 
-  if (uvmgpu_import_nic_dmabuf(m->g, m->host_fd, size, &m->host) != 0) {
-    fprintf(stderr, "uvmgpu: import NIC dmabuf (%lu B) failed: %s\n",(unsigned long)size, strerror(errno));
+  if (uvmgpu_import_nic_dmabuf(m->g, m->host_fd, m->host_total, &m->host) !=
+      0) {
+    fprintf(stderr, "uvmgpu: import NIC dmabuf (%lu B) failed: %s\n",
+            (unsigned long)m->host_total, strerror(errno));
     goto fail;
   }
   m->host_armed = true;
@@ -100,8 +109,10 @@ fail:
   return FAILURE;
 }
 
-static int uvmgpu_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,void *addr, uint64_t size) {
-  struct uvmgpu_memory_ctx *m = container_of(ctx, struct uvmgpu_memory_ctx, base);
+static int uvmgpu_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,
+                                     void *addr, uint64_t size) {
+  struct uvmgpu_memory_ctx *m =
+      container_of(ctx, struct uvmgpu_memory_ctx, base);
 
   (void)dmabuf_fd;
   (void)addr;
@@ -111,29 +122,42 @@ static int uvmgpu_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,void 
   return SUCCESS;
 }
 
-static int uvmgpu_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx,size_t size) {
-  struct uvmgpu_memory_ctx *m = container_of(ctx, struct uvmgpu_memory_ctx, base);
+static int uvmgpu_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx,
+						 uintptr_t bounce_buffer,
+                                                 size_t size) {
+  struct uvmgpu_memory_ctx *m =
+      container_of(ctx, struct uvmgpu_memory_ctx, base);
 
-  if (uvmgpu_copy_to_host_sealed(m->g, m->host, m->dev, size, NULL) != 0) {
-    fprintf(stderr, "uvmgpu: sealed GPU->sysmem copy (%zu B) failed: %s\n", size,strerror(errno));
+  (void)bounce_buffer;
+
+  if (uvmgpu_copy_to_host_sealed(m->g, m->host, m->dev, size) != 0) {
+    fprintf(stderr, "uvmgpu: sealed GPU->sysmem copy (%zu B) failed: %s\n",
+            size, strerror(errno));
     return FAILURE;
   }
 
   return SUCCESS;
 }
 
-static int uvmgpu_copy_from_bounce_buffer_to_gpu(struct memory_ctx *ctx,size_t size) {
-  struct uvmgpu_memory_ctx *m = container_of(ctx, struct uvmgpu_memory_ctx, base);
+static int uvmgpu_copy_from_bounce_buffer_to_gpu(struct memory_ctx *ctx,
+						 uintptr_t bounce_buffer,
+                                                 size_t size) {
+  struct uvmgpu_memory_ctx *m =
+      container_of(ctx, struct uvmgpu_memory_ctx, base);
 
-  if (uvmgpu_copy_to_device_sealed(m->g, m->dev, m->host, size, NULL) != 0) {
-    fprintf(stderr, "uvmgpu: sealed sysmem->GPU copy (%zu B) failed: %s\n", size,strerror(errno));
+  (void)bounce_buffer;
+
+  if (uvmgpu_copy_to_device_sealed(m->g, m->dev, m->host, size) != 0) {
+    fprintf(stderr, "uvmgpu: sealed sysmem->GPU copy (%zu B) failed: %s\n",
+            size, strerror(errno));
     return FAILURE;
   }
 
   return SUCCESS;
 }
 
-static void *uvmgpu_memory_copy_to_buffer(void *dest, const void *src,size_t size) {
+static void *uvmgpu_memory_copy_to_buffer(void *dest, const void *src,
+                                          size_t size) {
   return memcpy(dest, src, size);
 }
 
@@ -151,8 +175,10 @@ struct memory_ctx *uvmgpu_memory_create(struct perftest_parameters *params) {
   ctx->base.copy_host_to_buffer = uvmgpu_memory_copy_to_buffer;
   ctx->base.copy_buffer_to_host = uvmgpu_memory_copy_to_buffer;
   ctx->base.copy_buffer_to_buffer = uvmgpu_memory_copy_to_buffer;
-  ctx->base.copy_from_gpu_to_bounce_buffer = uvmgpu_copy_from_gpu_to_bounce_buffer;
-  ctx->base.copy_from_bounce_buffer_to_gpu = uvmgpu_copy_from_bounce_buffer_to_gpu;
+  ctx->base.copy_from_gpu_to_bounce_buffer =
+      uvmgpu_copy_from_gpu_to_bounce_buffer;
+  ctx->base.copy_from_bounce_buffer_to_gpu =
+      uvmgpu_copy_from_bounce_buffer_to_gpu;
   ctx->gpu_index = params->uvmgpu_device_id;
   ctx->host_fd = -1;
 

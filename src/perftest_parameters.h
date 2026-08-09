@@ -472,7 +472,7 @@ enum cuda_mem_type {
 	CUDA_MEM_HOSTREGISTER,
 	CUDA_MEM_MALLOC,
 	CUDA_MEM_BOUNCE,
-	CUDA_MEM_BOUNCE_DMA_COH,  /* CPU side: dma_heap_coh DMA-BUF (/dev/dma_heap/coh) */
+	CUDA_MEM_BOUNCE_DMA_COH,  /* Private plaintext + OpenSSL AES-GCM + dma_heap_coh DMA-BUF */
 	CUDA_MEM_TYPES
 };
 

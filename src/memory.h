@@ -55,8 +55,8 @@ struct memory_ctx {
 	void *(*copy_host_to_buffer)(void *dest, const void *src, size_t size);
 	void *(*copy_buffer_to_host)(void *dest, const void *src, size_t size);
 	void *(*copy_buffer_to_buffer)(void *dest, const void *src, size_t size);
-	int (*copy_from_gpu_to_bounce_buffer)(struct memory_ctx *ctx, size_t size);
-	int (*copy_from_bounce_buffer_to_gpu)(struct memory_ctx *ctx, size_t size);
+	int (*copy_from_gpu_to_bounce_buffer)(struct memory_ctx *ctx, uintptr_t bounce_buffer, size_t size);
+	int (*copy_from_bounce_buffer_to_gpu)(struct memory_ctx *ctx, uintptr_t bounce_buffer, size_t size);
 	// the buffer that perftest should write its fill data into
 	// when if differs from DMA buffer.
 	// -> used by bounce buffer approach where fill and dma buffer are different

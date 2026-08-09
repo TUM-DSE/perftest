@@ -110,8 +110,10 @@ static int nvgpu_memory_free_buffer(struct memory_ctx *ctx, int dmabuf_fd,void *
   return SUCCESS;
 }
 
-static int nvgpu_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx,size_t size) {
+static int nvgpu_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx,uintptr_t bounce_buffer,size_t size) {
   struct nvgpu_memory_ctx *m = container_of(ctx, struct nvgpu_memory_ctx, base);
+
+  (void)bounce_buffer;
 
   if (nvgpu_copy_to_host_sealed(m->g, m->host, m->tag, m->dev, size) != 0) {
     fprintf(stderr, "nvgpu: sealed GPU->sysmem copy (%zu B) failed: %s\n", size,strerror(errno));
