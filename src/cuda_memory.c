@@ -30,10 +30,6 @@ static void cuda_validation_destroy(struct memory_ctx *ctx);
 #define ACCEL_PAGE_SIZE (64 * 1024)
 #define CUDA_BOUNCE_GCM_IV_SIZE 12
 #define CUDA_BOUNCE_GCM_TAG_SIZE 16
-/* ib_write_lat uses the last byte as its clear-text arrival sentinel. */
-#define CUDA_BOUNCE_SIGNAL_SIZE 1
-#define CUDA_BOUNCE_GCM_OVERHEAD \
-	(CUDA_BOUNCE_GCM_IV_SIZE + CUDA_BOUNCE_GCM_TAG_SIZE + CUDA_BOUNCE_SIGNAL_SIZE)
 
 /* Benchmark-only key. Session establishment and key exchange are intentionally
  * outside the measurement; this key must never be used for real data. */
@@ -79,7 +75,6 @@ struct cuda_memory_ctx {
 	// openssl software side encryption / decryption
 	void *private_plaintext_addr;
 	EVP_CIPHER_CTX *encrypt_ctx;
-	EVP_CIPHER_CTX *decrypt_ctx;
 	unsigned char nonce_prefix[4];
 	uint64_t nonce_counter;
 };
@@ -87,8 +82,7 @@ struct cuda_memory_ctx {
 static int cuda_bounce_gcm_init(struct cuda_memory_ctx *ctx)
 {
 	ctx->encrypt_ctx = EVP_CIPHER_CTX_new();
-	ctx->decrypt_ctx = EVP_CIPHER_CTX_new();
-	if (!ctx->encrypt_ctx || !ctx->decrypt_ctx) {
+	if (!ctx->encrypt_ctx) {
 		fprintf(stderr, "cuda_bounce_dma_coh: EVP_CIPHER_CTX_new failed\n");
 		return FAILURE;
 	}
@@ -101,11 +95,7 @@ static int cuda_bounce_gcm_init(struct cuda_memory_ctx *ctx)
 	if (EVP_EncryptInit_ex(ctx->encrypt_ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
 	    EVP_CIPHER_CTX_ctrl(ctx->encrypt_ctx, EVP_CTRL_GCM_SET_IVLEN,
 				CUDA_BOUNCE_GCM_IV_SIZE, NULL) != 1 ||
-	    EVP_EncryptInit_ex(ctx->encrypt_ctx, NULL, NULL, cuda_bounce_gcm_key, NULL) != 1 ||
-	    EVP_DecryptInit_ex(ctx->decrypt_ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
-	    EVP_CIPHER_CTX_ctrl(ctx->decrypt_ctx, EVP_CTRL_GCM_SET_IVLEN,
-				CUDA_BOUNCE_GCM_IV_SIZE, NULL) != 1 ||
-	    EVP_DecryptInit_ex(ctx->decrypt_ctx, NULL, NULL, cuda_bounce_gcm_key, NULL) != 1) {
+	    EVP_EncryptInit_ex(ctx->encrypt_ctx, NULL, NULL, cuda_bounce_gcm_key, NULL) != 1) {
 		fprintf(stderr, "cuda_bounce_dma_coh: AES-256-GCM context initialization failed\n");
 		return FAILURE;
 	}
@@ -278,7 +268,6 @@ int cuda_memory_destroy(struct memory_ctx *ctx) {
 	}
 
 	EVP_CIPHER_CTX_free(cuda_ctx->encrypt_ctx);
-	EVP_CIPHER_CTX_free(cuda_ctx->decrypt_ctx);
 
 	if (cuda_ctx) {
 		free(cuda_ctx);
@@ -297,30 +286,26 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx, uintptr_t bounce
 	struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
 
 	if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_DMA_COH) {
-		if (size <= CUDA_BOUNCE_GCM_OVERHEAD)
-			return FAILURE;
 		unsigned char *record = (unsigned char *)bounce_buffer;
-		size_t payload_size = size - CUDA_BOUNCE_GCM_OVERHEAD;
+		unsigned char iv[CUDA_BOUNCE_GCM_IV_SIZE];
+		unsigned char tag[CUDA_BOUNCE_GCM_TAG_SIZE];
 		int output_length;
 
 		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-		int error = p_cuMemcpyDtoH(cuda_ctx->private_plaintext_addr, gpu_side, payload_size);
+		int error = p_cuMemcpyDtoH(cuda_ctx->private_plaintext_addr, gpu_side, size);
 		if (error != CUDA_SUCCESS) {
 			fprintf(stderr, "cuda_bounce_dma_coh: cuMemcpyDtoH failed: %d\n", error);
 			return FAILURE;
 		}
 
-		cuda_bounce_make_iv(cuda_ctx, record);
-		if (EVP_EncryptInit_ex(cuda_ctx->encrypt_ctx, NULL, NULL, NULL, record) != 1 ||
-		    EVP_EncryptUpdate(cuda_ctx->encrypt_ctx, record + CUDA_BOUNCE_GCM_IV_SIZE,
+		cuda_bounce_make_iv(cuda_ctx, iv);
+		if (EVP_EncryptInit_ex(cuda_ctx->encrypt_ctx, NULL, NULL, NULL, iv) != 1 ||
+		    EVP_EncryptUpdate(cuda_ctx->encrypt_ctx, record,
 				      &output_length, cuda_ctx->private_plaintext_addr,
-				      (int)payload_size) != 1 ||
-		    EVP_EncryptFinal_ex(cuda_ctx->encrypt_ctx,
-					record + CUDA_BOUNCE_GCM_IV_SIZE + payload_size,
-					&output_length) != 1 ||
+				      (int)size) != 1 ||
+		    EVP_EncryptFinal_ex(cuda_ctx->encrypt_ctx, tag, &output_length) != 1 ||
 		    EVP_CIPHER_CTX_ctrl(cuda_ctx->encrypt_ctx, EVP_CTRL_GCM_GET_TAG,
-					CUDA_BOUNCE_GCM_TAG_SIZE,
-					record + CUDA_BOUNCE_GCM_IV_SIZE + payload_size) != 1) {
+					CUDA_BOUNCE_GCM_TAG_SIZE, tag) != 1) {
 			fprintf(stderr, "cuda_bounce_dma_coh: AES-256-GCM encryption failed\n");
 			return FAILURE;
 		}
@@ -344,36 +329,6 @@ int cuda_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx, uintptr_t bounce
 int cuda_copy_from_bounce_buffer_to_gpu(struct memory_ctx *ctx, uintptr_t bounce_buffer, size_t size)
 {
     struct cuda_memory_ctx *cuda_ctx = container_of(ctx, struct cuda_memory_ctx, base);
-
-    if (cuda_ctx->mem_type == CUDA_MEM_BOUNCE_DMA_COH) {
-		if (size <= CUDA_BOUNCE_GCM_OVERHEAD)
-			return FAILURE;
-		unsigned char *record = (unsigned char *)bounce_buffer;
-		size_t payload_size = size - CUDA_BOUNCE_GCM_OVERHEAD;
-		int output_length;
-
-		if (EVP_DecryptInit_ex(cuda_ctx->decrypt_ctx, NULL, NULL, NULL, record) != 1 ||
-		    EVP_DecryptUpdate(cuda_ctx->decrypt_ctx, cuda_ctx->private_plaintext_addr,
-					   &output_length, record + CUDA_BOUNCE_GCM_IV_SIZE,
-				      (int)payload_size) != 1 ||
-		    EVP_CIPHER_CTX_ctrl(cuda_ctx->decrypt_ctx, EVP_CTRL_GCM_SET_TAG,
-					CUDA_BOUNCE_GCM_TAG_SIZE,
-					record + CUDA_BOUNCE_GCM_IV_SIZE + payload_size) != 1 ||
-		    EVP_DecryptFinal_ex(cuda_ctx->decrypt_ctx,
-					(unsigned char *)cuda_ctx->private_plaintext_addr + payload_size,
-					&output_length) != 1) {
-			fprintf(stderr, "cuda_bounce_dma_coh: AES-256-GCM authentication/decryption failed\n");
-			return FAILURE;
-		}
-
-		CUdeviceptr gpu_side = (CUdeviceptr)cuda_ctx->gpu_bounce_buf_addr;
-		int error = p_cuMemcpyHtoD(gpu_side, cuda_ctx->private_plaintext_addr, payload_size);
-		if (error != CUDA_SUCCESS) {
-			fprintf(stderr, "cuda_bounce_dma_coh: cuMemcpyHtoD failed: %d\n", error);
-			return FAILURE;
-		}
-		return SUCCESS;
-	}
 
 	if(cuda_ctx->mem_type == CUDA_MEM_BOUNCE) {
 		CUdeviceptr cpu_side = (CUdeviceptr)bounce_buffer;
@@ -893,7 +848,8 @@ struct memory_ctx *cuda_memory_create(struct perftest_parameters *params) {
 	ctx->base.validation_stop = cuda_validation_stop;
 	ctx->base.validation_destroy = cuda_validation_destroy;
 	ctx->base.copy_from_gpu_to_bounce_buffer = cuda_copy_from_gpu_to_bounce_buffer;
-	ctx->base.copy_from_bounce_buffer_to_gpu = cuda_copy_from_bounce_buffer_to_gpu;
+	ctx->base.copy_from_bounce_buffer_to_gpu = params->cuda_mem_type == CUDA_MEM_BOUNCE
+		? cuda_copy_from_bounce_buffer_to_gpu : NULL;
 	ctx->base.get_fill_buffer = (params->cuda_mem_type == CUDA_MEM_BOUNCE_DMA_COH ||
 	                              params->cuda_mem_type == CUDA_MEM_BOUNCE)
 	                             ? cuda_get_fill_buffer : NULL;

@@ -130,7 +130,7 @@ static int uvmgpu_copy_from_gpu_to_bounce_buffer(struct memory_ctx *ctx,
 
   (void)bounce_buffer;
 
-  if (uvmgpu_copy_to_host_sealed(m->g, m->host, m->dev, size) != 0) {
+  if (uvmgpu_copy_to_host_sealed(m->g, m->host, m->dev, size, NULL) != 0) {
     fprintf(stderr, "uvmgpu: sealed GPU->sysmem copy (%zu B) failed: %s\n",
             size, strerror(errno));
     return FAILURE;
@@ -147,7 +147,7 @@ static int uvmgpu_copy_from_bounce_buffer_to_gpu(struct memory_ctx *ctx,
 
   (void)bounce_buffer;
 
-  if (uvmgpu_copy_to_device_sealed(m->g, m->dev, m->host, size) != 0) {
+  if (uvmgpu_copy_to_device_sealed(m->g, m->dev, m->host, size, NULL) != 0) {
     fprintf(stderr, "uvmgpu: sealed sysmem->GPU copy (%zu B) failed: %s\n",
             size, strerror(errno));
     return FAILURE;

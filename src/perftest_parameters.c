@@ -2149,6 +2149,13 @@ static void force_dependecies(struct perftest_parameters *user_param)
 		exit(1);
 	}
 
+	if (user_param->memory_type == MEMORY_CUDA &&
+	    user_param->cuda_mem_type == CUDA_MEM_BOUNCE_DMA_COH && user_param->verb == READ) {
+		printf(RESULT_LINE);
+		fprintf(stderr, "Encrypted CPU bounce currently supports write operations only\n");
+		exit(1);
+	}
+
 	if ((user_param->memory_type == MEMORY_CUDA || user_param->memory_type == MEMORY_DM) &&
 	    user_param->verb == SEND && (user_param->size <= 64 || user_param->test_method == RUN_ALL)) {
 		printf(RESULT_LINE);
