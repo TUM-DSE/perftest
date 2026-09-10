@@ -461,7 +461,6 @@ enum memory_type {
 	MEMORY_OPENCL,
 	MEMORY_DM,
 	MEMORY_DMABUF,
-	MEMORY_NVGPU,
 	MEMORY_UVMGPU
 };
 
@@ -614,7 +613,6 @@ struct perftest_parameters {
 	enum memory_type		memory_type;
 	struct memory_ctx		*(*memory_create)(struct perftest_parameters *params);
 	int				cuda_device_id;
-	int				nvgpu_device_id;
 	int				uvmgpu_device_id;
 	char				*cuda_device_bus_id;
 	int				cuda_mem_type;
