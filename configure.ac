@@ -361,7 +361,7 @@ AS_IF([test "x$enable_uvmgpu" = xyes], [
              [AC_MSG_ERROR([libuvmgpu bounce buffer needs rdma-core dmabuf mr registration])])
        UVMGPU_CPPFLAGS="-I$UVMGPU_PATH/include"
        # The CE does the crypto in-kernel, so the archive needs no host-side
-       # OpenSSL (unlike libnvgpu); link it plain.
+       # OpenSSL; link it plain.
        UVMGPU_LIBS="$UVMGPU_PATH/libuvmgpu.a"
        AC_DEFINE([HAVE_UVMGPU], [1], [Enable libuvmgpu CC sealed bounce buffer])
        AC_MSG_NOTICE([libuvmgpu CC sealed bounce buffer enabled ($UVMGPU_PATH)])
